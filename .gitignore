@@ -1,0 +1,35 @@
+cat > ~/Desktop/cinemate/.gitignore << 'EOF'
+# Environment
+.env
+.env.test
+.env.local
+*.env
+
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+
+# Build output
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes (never commit these)
+pg_data/
+jellyfin_config/
+jellyfin_cache/
+
+# Test artifacts
+junit.xml
+coverage/
+EOF

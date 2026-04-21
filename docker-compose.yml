@@ -1,0 +1,57 @@
+services:
+
+  nginx:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+      - jellyfin
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    env_file: .env
+    ports:
+    - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    volumes:
+      - jellyfin_config:/config
+      - jellyfin_cache:/cache
+      - /home/dragos/media:/media:ro
+    ports:
+      - "8096:8096"
+    restart: unless-stopped
+
+  ml:
+    build: ./ml
+    env_file: .env
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  jellyfin_config:
+  jellyfin_cache:
