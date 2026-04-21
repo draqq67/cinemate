@@ -33,3 +33,5 @@ jellyfin_cache/
 junit.xml
 coverage/
 EOF
+
+**/cookies.txt
