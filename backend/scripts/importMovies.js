@@ -18,68 +18,19 @@ const pool = new Pool({
 const TMDB_TOKEN = process.env.TMDB_API_TOKEN;
 const BASE = 'https://api.themoviedb.org/3';
 const headers = { Authorization: `Bearer ${TMDB_TOKEN}` };
-const TARGET = 1000;
+
+const START_ID = 1;
+const END_ID = 10000; // Adjust as needed
 
 async function get(url) {
   const res = await fetch(url, { headers });
+  if (res.status === 404) return null;
   if (!res.ok) throw new Error(`${res.status} ${url}`);
   return res.json();
 }
 
 async function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
-}
-
-async function collectIds() {
-  const lists = ['movie/popular', 'movie/top_rated', 'movie/now_playing', 'movie/upcoming'];
-  const seen = new Set();
-  const ids = [];
-
-  for (const list of lists) {
-    if (ids.length >= TARGET) break;
-    const first = await get(`${BASE}/${list}?language=en-US&page=1`);
-    const totalPages = Math.min(first.total_pages, 500);
-    process.stdout.write(`\n  ${list} — ${totalPages} pages\n`);
-
-    for (let page = 1; page <= totalPages; page++) {
-      if (ids.length >= TARGET) break;
-      try {
-        const data = page === 1 ? first : await get(`${BASE}/${list}?language=en-US&page=${page}`);
-        for (const m of data.results) {
-          if (!seen.has(m.id)) { seen.add(m.id); ids.push(m.id); }
-        }
-        process.stdout.write(`\r    p${page}/${totalPages} — ${ids.length} IDs collected`);
-        await sleep(150);
-      } catch (err) {
-        console.error(`\n    Failed page ${page}: ${err.message}`);
-        await sleep(1000);
-      }
-    }
-    console.log();
-  }
-
-  if (ids.length < TARGET) {
-    console.log('\n  Supplementing with discover...');
-    for (let page = 1; ids.length < TARGET; page++) {
-      try {
-        const data = await get(
-          `${BASE}/discover/movie?language=en-US&sort_by=popularity.desc&vote_count.gte=50&page=${page}`
-        );
-        if (!data.results?.length) break;
-        for (const m of data.results) {
-          if (!seen.has(m.id)) { seen.add(m.id); ids.push(m.id); }
-        }
-        process.stdout.write(`\r    discover p${page} — ${ids.length} IDs`);
-        await sleep(150);
-      } catch (err) {
-        console.error(`\n    Failed: ${err.message}`);
-        await sleep(1000);
-      }
-    }
-    console.log();
-  }
-
-  return ids.slice(0, TARGET);
 }
 
 async function savePerson(client, person) {
@@ -106,7 +57,9 @@ async function importMovie(tmdbId, client) {
     `${BASE}/movie/${tmdbId}?language=en-US&append_to_response=credits,keywords,reviews`
   );
 
-  if (!m.overview || !m.poster_path || !m.release_date) return false;
+  if (!m) return 'not_found';
+  if (!m.overview || !m.poster_path || !m.release_date) return 'skipped';
+  if ((m.vote_count ?? 0) < 1000) return 'skipped';
 
   await client.query('BEGIN');
 
@@ -189,7 +142,7 @@ async function importMovie(tmdbId, client) {
     }
 
     // ── Cast ─────────────────────────────────────────────────────────────────
-    const cast = (m.credits?.cast || []).slice(0, 20); // top 20 billed
+    const cast = (m.credits?.cast || []).slice(0, 20);
     for (const c of cast) {
       await savePerson(client, c);
       await client.query(
@@ -251,7 +204,7 @@ async function importMovie(tmdbId, client) {
     }
 
     await client.query('COMMIT');
-    return true;
+    return 'inserted';
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -267,45 +220,49 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('\nCollecting movie IDs...');
-  const ids = await collectIds();
-  console.log(`\nCollected ${ids.length} IDs`);
-
-  // Resume support — skip already imported
+  // Resume support — skip already imported IDs
   const { rows: existing } = await pool.query('SELECT tmdb_id FROM movies');
   const existingSet = new Set(existing.map(r => r.tmdb_id));
-  const toImport = ids.filter(id => !existingSet.has(id));
-  console.log(`Already in DB: ${existingSet.size} | To import: ${toImport.length}\n`);
+  console.log(`Already in DB: ${existingSet.size}`);
+  console.log(`Scanning IDs from ${START_ID} to ${END_ID}...\n`);
 
-  let inserted = 0, skipped = 0, failed = 0;
+  let inserted = 0, skipped = 0, not_found = 0, failed = 0;
+  const total = END_ID - START_ID + 1;
   const startTime = Date.now();
 
-  for (let i = 0; i < toImport.length; i++) {
-    const tmdbId = toImport[i];
+  for (let tmdbId = START_ID; tmdbId <= END_ID; tmdbId++) {
+    if (existingSet.has(tmdbId)) {
+      skipped++;
+      continue;
+    }
+
     const client = await pool.connect();
     try {
-      const ok = await importMovie(tmdbId, client);
-      ok ? inserted++ : skipped++;
+      const result = await importMovie(tmdbId, client);
+      if (result === 'inserted') inserted++;
+      else if (result === 'not_found') not_found++;
+      else skipped++;
     } catch (err) {
       failed++;
-      // uncomment to debug: console.error(`\n  Failed ${tmdbId}: ${err.message}`);
+      // Uncomment to debug: console.error(`\n  Failed ${tmdbId}: ${err.message}`);
     } finally {
       client.release();
     }
 
+    const done = tmdbId - START_ID + 1;
     const elapsed = (Date.now() - startTime) / 1000;
-    const rate = (inserted / (elapsed || 1)).toFixed(1);
-    const eta = Math.round((toImport.length - i - 1) / (rate || 1));
+    const rate = (done / (elapsed || 1)).toFixed(1);
+    const eta = Math.round((total - done) / (rate || 1));
     process.stdout.write(
-      `\r  [${i + 1}/${toImport.length}] inserted=${inserted} skipped=${skipped} failed=${failed} | ${rate}/s | ETA ${eta}s   `
+      `\r  [${tmdbId}/${END_ID}] inserted=${inserted} skipped=${skipped} not_found=${not_found} failed=${failed} | ${rate}/s | ETA ${eta}s   `
     );
 
-    await sleep(200); // ~5 req/s — safe for append_to_response (counts as 3-4 requests)
+    await sleep(200); // ~5 req/s
   }
 
   const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
   console.log(`\n\nFinished in ${elapsed} min`);
-  console.log(`Inserted: ${inserted} | Skipped: ${skipped} | Failed: ${failed}`);
+  console.log(`Inserted: ${inserted} | Skipped: ${skipped} | Not found: ${not_found} | Failed: ${failed}`);
 
   await pool.end();
 }

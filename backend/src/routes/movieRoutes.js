@@ -337,4 +337,70 @@ router.get('/:tmdbId/watchlist', requireAuth, async (req, res) => {
   }
 });
 
+// ── GET /api/movies/:tmdbId/stream-url ────────────────────────────────────────
+router.get('/:tmdbId/stream-url', requireAuth, async (req, res) => {
+  try {
+    const { tmdbId } = req.params;
+
+    const { rows } = await pool.query(
+      'SELECT jellyfin_id FROM movies WHERE tmdb_id = $1',
+      [tmdbId]
+    );
+
+    if (!rows[0]) return res.status(404).json({ error: 'Movie not found' });
+    if (!rows[0].jellyfin_id) return res.status(404).json({ error: 'No stream available' });
+
+    const jellyfinId = rows[0].jellyfin_id;
+    const jellyfinUrl = process.env.JELLYFIN_URL || 'http://jellyfin:8096';
+    const apiKey = process.env.JELLYFIN_API_KEY;
+
+    // Get stream info from Jellyfin
+    const infoRes = await fetch(
+      `${jellyfinUrl}/Items/${jellyfinId}/PlaybackInfo?api_key=${apiKey}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ DeviceProfile: {} }) }
+    );
+
+    if (!infoRes.ok) return res.status(502).json({ error: 'Jellyfin unavailable' });
+
+    // Return HLS stream URL — proxied through nginx so API key never reaches browser
+    const streamUrl = `${jellyfinUrl}/Videos/${jellyfinId}/master.m3u8?api_key=${apiKey}&static=true`;
+
+    res.json({
+      streamUrl,
+      jellyfinId,
+      directUrl: `${jellyfinUrl}/Items/${jellyfinId}/Download?api_key=${apiKey}`,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+router.post('/:tmdbId/progress', requireAuth, async (req, res) => {
+  try {
+    const { tmdbId } = req.params;
+    const { progress_s } = req.body;
+
+    if (progress_s === undefined || progress_s < 0)
+      return res.status(400).json({ error: 'Invalid progress value' });
+
+    const { rows: movie } = await pool.query(
+      'SELECT id FROM movies WHERE tmdb_id = $1', [tmdbId]
+    );
+    if (!movie[0]) return res.status(404).json({ error: 'Movie not found' });
+
+    await pool.query(
+      `INSERT INTO watch_history (user_id, movie_id, progress_s, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (user_id, movie_id)
+       DO UPDATE SET progress_s = $3, updated_at = NOW()`,
+      [req.user.id, movie[0].id, Math.floor(progress_s)]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 export default router;
