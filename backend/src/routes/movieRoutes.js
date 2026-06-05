@@ -4,6 +4,15 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
+const TMDB_BASE = 'https://api.themoviedb.org/3';
+const tmdbGet = async (path) => {
+  const res = await fetch(`${TMDB_BASE}${path}`, {
+    headers: { Authorization: `Bearer ${process.env.TMDB_API_TOKEN}` },
+  });
+  if (!res.ok) return null;
+  return res.json();
+};
+
 // ── GET /api/movies ───────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
@@ -14,6 +23,7 @@ router.get('/', async (req, res) => {
       sort = 'popularity',
       page = 1,
       limit = 20,
+      streamable = '',
     } = req.query;
 
     const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -41,6 +51,10 @@ router.get('/', async (req, res) => {
       conditions.push(`m.year = $${params.length}`);
     }
 
+    if (streamable === 'true') {
+      conditions.push(`m.jellyfin_id IS NOT NULL`);
+    }
+
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const sortMap = {
@@ -57,7 +71,7 @@ router.get('/', async (req, res) => {
 
     const { rows: movies } = await pool.query(
       `SELECT
-        m.tmdb_id, m.title, m.overview, m.poster_path, m.backdrop_path,
+        m.tmdb_id, m.title, m.poster_path,
         m.release_date, m.year, m.runtime, m.vote_average, m.vote_count,
         m.popularity, m.avg_rating, m.rating_count, m.jellyfin_id,
         array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL) AS genres
@@ -66,7 +80,7 @@ router.get('/', async (req, res) => {
        LEFT JOIN genres g ON g.id = mg.genre_id
        ${where}
        GROUP BY
-         m.tmdb_id, m.title, m.overview, m.poster_path, m.backdrop_path,
+         m.tmdb_id, m.title, m.poster_path,
          m.release_date, m.year, m.runtime, m.vote_average, m.vote_count,
          m.popularity, m.avg_rating, m.rating_count, m.jellyfin_id
        ORDER BY ${orderBy}
@@ -113,92 +127,210 @@ router.get('/genres', async (_req, res) => {
   }
 });
 
+// ── TMDB discovery helpers (shared transform) ─────────────────────────────────
+function tmdbMovieShape(r) {
+  return {
+    tmdb_id:      r.id,
+    title:        r.title,
+    poster_path:  r.poster_path,
+    year:         r.release_date ? parseInt(r.release_date.slice(0, 4)) : null,
+    vote_average: r.vote_average,
+    vote_count:   r.vote_count,
+    popularity:   r.popularity,
+    avg_rating:   null,
+    rating_count: 0,
+  };
+}
+
+// ── GET /api/movies/tmdb/:list — popular | top_rated | now_playing ────────────
+async function tmdbList(list, req, res) {
+  try {
+    const { page = 1 } = req.query;
+    const data = await tmdbGet(`/movie/${list}?page=${page}&language=en-US`);
+    if (!data) return res.status(502).json({ error: 'TMDB unavailable' });
+    res.json({ movies: (data.results || []).map(tmdbMovieShape) });
+  } catch (err) {
+    console.error('TMDB list error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+}
+router.get('/tmdb/popular',     (req, res) => tmdbList('popular',     req, res));
+router.get('/tmdb/top_rated',   (req, res) => tmdbList('top_rated',   req, res));
+router.get('/tmdb/now_playing', (req, res) => tmdbList('now_playing', req, res));
+
+// ── GET /api/movies/search/tmdb — must be before /:tmdbId ────────────────────
+router.get('/search/tmdb', async (req, res) => {
+  try {
+    const { q = '', page = 1 } = req.query;
+    if (!q.trim()) return res.json({ movies: [], total_results: 0, page: 1, total_pages: 0, source: 'tmdb' });
+
+    const tmdbRes = await tmdbGet(`/search/movie?query=${encodeURIComponent(q)}&page=${page}&include_adult=false`);
+    if (!tmdbRes) return res.status(502).json({ error: 'TMDB unavailable' });
+
+    const results = tmdbRes.results ?? [];
+    const tmdbIds = results.map(r => r.id);
+
+    // Batch-check which are already in DB
+    let inDbSet = new Set();
+    if (tmdbIds.length > 0) {
+      const { rows } = await pool.query(
+        `SELECT tmdb_id FROM movies WHERE tmdb_id = ANY($1::int[])`,
+        [tmdbIds]
+      );
+      inDbSet = new Set(rows.map(r => r.tmdb_id));
+    }
+
+    const movies = results.map(r => ({
+      tmdb_id:      r.id,
+      title:        r.title,
+      poster_path:  r.poster_path,
+      year:         r.release_date ? parseInt(r.release_date.slice(0, 4)) : null,
+      vote_average: r.vote_average,
+      vote_count:   r.vote_count,
+      popularity:   r.popularity,
+      jellyfin_id:  null,
+      avg_rating:   null,
+      rating_count: 0,
+      inDb:         inDbSet.has(r.id),
+    }));
+
+    res.json({
+      movies,
+      total_results: tmdbRes.total_results,
+      page:          tmdbRes.page,
+      total_pages:   tmdbRes.total_pages,
+      source:        'tmdb',
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // ── GET /api/movies/:tmdbId ───────────────────────────────────────────────────
 router.get('/:tmdbId', async (req, res) => {
   try {
     const { tmdbId } = req.params;
 
-    const { rows: movies } = await pool.query(
-      `SELECT
-        m.tmdb_id, m.imdb_id, m.title, m.original_title, m.overview, m.tagline,
-        m.poster_path, m.backdrop_path, m.release_date, m.year, m.runtime,
-        m.budget, m.revenue, m.popularity, m.vote_average, m.vote_count,
-        m.original_language, m.status, m.homepage, m.adult,
-        m.avg_rating, m.rating_count, m.jellyfin_id, m.created_at,
-        array_agg(DISTINCT g.name)
-          FILTER (WHERE g.name IS NOT NULL) AS genres,
-        array_agg(DISTINCT k.name)
-          FILTER (WHERE k.name IS NOT NULL) AS keywords,
-        array_agg(DISTINCT jsonb_build_object('iso_code', mc2.iso_code, 'name', mc2.name))
-          FILTER (WHERE mc2.iso_code IS NOT NULL) AS countries,
-        array_agg(DISTINCT jsonb_build_object('iso_code', ml.iso_code, 'english_name', ml.english_name))
-          FILTER (WHERE ml.iso_code IS NOT NULL) AS languages,
-        array_agg(DISTINCT jsonb_build_object('id', pc.id, 'name', pc.name, 'logo_path', pc.logo_path))
-          FILTER (WHERE pc.id IS NOT NULL) AS production_companies
-       FROM movies m
-       LEFT JOIN movie_genres mg                ON mg.tmdb_id = m.tmdb_id
-       LEFT JOIN genres g                       ON g.id = mg.genre_id
-       LEFT JOIN movie_keywords mk              ON mk.tmdb_id = m.tmdb_id
-       LEFT JOIN keywords k                     ON k.id = mk.keyword_id
-       LEFT JOIN movie_countries mc2            ON mc2.tmdb_id = m.tmdb_id
-       LEFT JOIN movie_languages ml             ON ml.tmdb_id = m.tmdb_id
-       LEFT JOIN movie_production_companies mpc ON mpc.tmdb_id = m.tmdb_id
-       LEFT JOIN production_companies pc        ON pc.id = mpc.company_id
-       WHERE m.tmdb_id = $1
-       GROUP BY
-         m.tmdb_id, m.imdb_id, m.title, m.original_title, m.overview, m.tagline,
-         m.poster_path, m.backdrop_path, m.release_date, m.year, m.runtime,
-         m.budget, m.revenue, m.popularity, m.vote_average, m.vote_count,
-         m.original_language, m.status, m.homepage, m.adult,
-         m.avg_rating, m.rating_count, m.jellyfin_id, m.created_at`,
-      [tmdbId]
-    );
+    const [dbResult, tmdbDetail, tmdbCredits, tmdbVideos, tmdbReviewsData] =
+      await Promise.all([
+        pool.query(
+          `SELECT m.tmdb_id, m.title, m.year, m.release_date, m.runtime,
+                  m.poster_path, m.popularity, m.vote_average, m.vote_count,
+                  m.avg_rating, m.rating_count, m.jellyfin_id, m.created_at,
+                  array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL) AS genres
+           FROM movies m
+           LEFT JOIN movie_genres mg ON mg.tmdb_id = m.tmdb_id
+           LEFT JOIN genres g ON g.id = mg.genre_id
+           WHERE m.tmdb_id = $1
+           GROUP BY m.tmdb_id, m.title, m.year, m.release_date, m.runtime,
+                    m.poster_path, m.popularity, m.vote_average, m.vote_count,
+                    m.avg_rating, m.rating_count, m.jellyfin_id, m.created_at`,
+          [tmdbId]
+        ),
+        tmdbGet(`/movie/${tmdbId}?append_to_response=keywords`),
+        tmdbGet(`/movie/${tmdbId}/credits`),
+        tmdbGet(`/movie/${tmdbId}/videos`),
+        tmdbGet(`/movie/${tmdbId}/reviews`),
+      ]);
 
-    if (!movies[0]) return res.status(404).json({ error: 'Movie not found' });
+    // If TMDB also has no data, the movie truly doesn't exist
+    if (!tmdbDetail) return res.status(404).json({ error: 'Movie not found' });
 
-    const { rows: cast } = await pool.query(
-      `SELECT p.id, p.name, p.profile_path, mc.character, mc.cast_order
-       FROM movie_cast mc
-       JOIN people p ON p.id = mc.person_id
-       WHERE mc.tmdb_id = $1
-       ORDER BY mc.cast_order
-       LIMIT 20`,
-      [tmdbId]
-    );
+    const db = dbResult.rows[0] ?? null;
+    const inDb = !!db;
 
-    const { rows: crew } = await pool.query(
-      `SELECT p.id, p.name, p.profile_path, mc.job, mc.department
-       FROM movie_crew mc
-       JOIN people p ON p.id = mc.person_id
-       WHERE mc.tmdb_id = $1
-       ORDER BY mc.job`,
-      [tmdbId]
-    );
+    // Fetch comments only when the movie is in our DB
+    let comments = [];
+    if (inDb) {
+      const { rows } = await pool.query(
+        `SELECT c.id, c.body, c.created_at, c.parent_id,
+                u.username, u.avatar_url,
+                r.score AS user_rating
+         FROM comments c
+         JOIN users u ON u.id = c.user_id
+         LEFT JOIN ratings r
+           ON r.movie_id = (SELECT id FROM movies WHERE tmdb_id = $1)
+           AND r.user_id = c.user_id
+         WHERE c.movie_id = (SELECT id FROM movies WHERE tmdb_id = $1)
+         ORDER BY c.created_at DESC`,
+        [tmdbId]
+      );
+      comments = rows;
+    }
 
-    const { rows: tmdbReviews } = await pool.query(
-      `SELECT id, author, username, avatar_path, rating, content, tmdb_url, created_at
-       FROM movie_reviews
-       WHERE tmdb_id = $1
-       ORDER BY created_at DESC`,
-      [tmdbId]
-    );
+    const releaseDate = db?.release_date ?? tmdbDetail.release_date ?? null;
+    const yearVal     = db?.year
+      ?? (releaseDate ? parseInt(String(releaseDate).slice(0, 4)) : null);
 
-    const { rows: comments } = await pool.query(
-      `SELECT
-        c.id, c.body, c.created_at, c.parent_id,
-        u.username, u.avatar_url,
-        r.score AS user_rating
-       FROM comments c
-       JOIN users u ON u.id = c.user_id
-       LEFT JOIN ratings r
-         ON r.movie_id = (SELECT id FROM movies WHERE tmdb_id = $1)
-         AND r.user_id = c.user_id
-       WHERE c.movie_id = (SELECT id FROM movies WHERE tmdb_id = $1)
-       ORDER BY c.created_at DESC`,
-      [tmdbId]
-    );
+    const movie = {
+      // DB fields (nulled out if not in DB)
+      tmdb_id:      tmdbDetail.id,
+      title:        db?.title        ?? tmdbDetail.title,
+      year:         yearVal,
+      release_date: releaseDate,
+      runtime:      db?.runtime      ?? tmdbDetail.runtime      ?? null,
+      poster_path:  db?.poster_path  ?? tmdbDetail.poster_path  ?? null,
+      popularity:   db?.popularity   ?? tmdbDetail.popularity   ?? null,
+      vote_average: db?.vote_average ?? tmdbDetail.vote_average ?? null,
+      vote_count:   db?.vote_count   ?? tmdbDetail.vote_count   ?? null,
+      avg_rating:   db?.avg_rating   ?? null,
+      rating_count: db?.rating_count ?? 0,
+      jellyfin_id:  db?.jellyfin_id  ?? null,
+      inDb,
 
-    res.json({ movie: movies[0], cast, crew, tmdbReviews, comments });
+      // TMDB-enriched fields
+      overview:             tmdbDetail.overview             ?? '',
+      tagline:              tmdbDetail.tagline              ?? '',
+      backdrop_path:        tmdbDetail.backdrop_path        ?? null,
+      imdb_id:              tmdbDetail.imdb_id              ?? null,
+      original_title:       tmdbDetail.original_title       ?? (db?.title ?? tmdbDetail.title),
+      homepage:             tmdbDetail.homepage             ?? null,
+      budget:               tmdbDetail.budget               ?? 0,
+      revenue:              tmdbDetail.revenue              ?? 0,
+      adult:                tmdbDetail.adult                ?? false,
+      status:               tmdbDetail.status               ?? null,
+      original_language:    tmdbDetail.original_language    ?? null,
+      genres:               db?.genres?.length
+                              ? db.genres
+                              : (tmdbDetail.genres?.map(g => g.name) ?? []),
+      production_companies: (tmdbDetail.production_companies ?? [])
+                              .map(c => ({ id: c.id, name: c.name, logo_path: c.logo_path })),
+      countries:            (tmdbDetail.production_countries ?? [])
+                              .map(c => ({ iso_code: c.iso_3166_1, name: c.name })),
+      languages:            (tmdbDetail.spoken_languages ?? [])
+                              .map(l => ({ iso_code: l.iso_639_1, english_name: l.english_name })),
+      keywords:             (tmdbDetail.keywords?.keywords ?? []).map(k => k.name),
+    };
+
+    const cast = (tmdbCredits?.cast ?? []).slice(0, 20).map(c => ({
+      id:           c.id,
+      name:         c.name,
+      profile_path: c.profile_path,
+      character:    c.character,
+      cast_order:   c.order,
+    }));
+
+    const crew = (tmdbCredits?.crew ?? [])
+      .filter(c => ['Director', 'Screenplay', 'Writer', 'Story', 'Novel', 'Producer'].includes(c.job))
+      .map(c => ({ id: c.id, name: c.name, profile_path: c.profile_path, job: c.job, department: c.department }));
+
+    const trailers = (tmdbVideos?.results ?? [])
+      .filter(v => v.site === 'YouTube' && v.type === 'Trailer')
+      .slice(0, 3)
+      .map(v => ({ key: v.key, name: v.name }));
+
+    const tmdbReviews = (tmdbReviewsData?.results ?? []).slice(0, 10).map(r => ({
+      id:          r.id,
+      author:      r.author,
+      username:    r.author_details?.username ?? r.author,
+      avatar_path: r.author_details?.avatar_path ?? null,
+      rating:      r.author_details?.rating ?? null,
+      content:     r.content,
+      created_at:  r.created_at,
+    }));
+
+    res.json({ movie, cast, crew, tmdbReviews, comments, trailers, inDb });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -338,6 +470,7 @@ router.get('/:tmdbId/watchlist', requireAuth, async (req, res) => {
 });
 
 // ── GET /api/movies/:tmdbId/stream-url ────────────────────────────────────────
+// ── GET /api/movies/:tmdbId/stream-url ────────────────────────────────────────
 router.get('/:tmdbId/stream-url', requireAuth, async (req, res) => {
   try {
     const { tmdbId } = req.params;
@@ -347,34 +480,217 @@ router.get('/:tmdbId/stream-url', requireAuth, async (req, res) => {
       [tmdbId]
     );
 
-    if (!rows[0]) return res.status(404).json({ error: 'Movie not found' });
+    if (!rows[0])             return res.status(404).json({ error: 'Movie not found' });
     if (!rows[0].jellyfin_id) return res.status(404).json({ error: 'No stream available' });
 
-    const jellyfinId = rows[0].jellyfin_id;
-    const jellyfinUrl = process.env.JELLYFIN_URL || 'http://jellyfin:8096';
-    const apiKey = process.env.JELLYFIN_API_KEY;
+    const jellyfinId       = rows[0].jellyfin_id;
+    const jellyfinInternal = process.env.JELLYFIN_URL || 'http://jellyfin:8096';
+    const apiKey           = process.env.JELLYFIN_API_KEY;
+    const jellyfinUserId   = process.env.JELLYFIN_USER_ID;
 
-    // Get stream info from Jellyfin
+    // ── Step 1: Get media info from Jellyfin ─────────────────────────────────
+    // userId is required by Jellyfin's UserLibraryController.GetItem
+    const userParam = jellyfinUserId ? `&userId=${jellyfinUserId}` : '';
     const infoRes = await fetch(
-      `${jellyfinUrl}/Items/${jellyfinId}/PlaybackInfo?api_key=${apiKey}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ DeviceProfile: {} }) }
+      `${jellyfinInternal}/Items/${jellyfinId}?api_key=${apiKey}&Fields=MediaStreams${userParam}`
     );
 
-    if (!infoRes.ok) return res.status(502).json({ error: 'Jellyfin unavailable' });
+    if (!infoRes.ok) {
+      // Jellyfin unavailable — fallback to direct MP4
+      const streamUrl = `/stream/Videos/${jellyfinId}/stream?api_key=${apiKey}&static=true&container=mp4`;
+      return res.json({ streamUrl, jellyfinId, type: 'mp4', transcoding: false });
+    }
 
-    // Return HLS stream URL — proxied through nginx so API key never reaches browser
-    const streamUrl = `${jellyfinUrl}/Videos/${jellyfinId}/master.m3u8?api_key=${apiKey}&static=true`;
+    const info = await infoRes.json();
+    const mediaStreams = info.MediaStreams || [];
+
+    const videoStream = mediaStreams.find(s => s.Type === 'Video');
+    const audioStream = mediaStreams.find(s => s.Type === 'Audio');
+    const subtitleStreams = mediaStreams
+      .filter(s => s.Type === 'Subtitle')
+      .map(s => ({
+        index:    s.Index,
+        language: s.Language || 'und',
+        label:    s.DisplayTitle || s.Title || (s.Language ? s.Language.toUpperCase() : `Track ${s.Index}`),
+        url:      `/stream/Videos/${jellyfinId}/Subtitles/${s.Index}/0/Stream.vtt?api_key=${apiKey}`,
+      }));
+
+    const videoCodec = videoStream?.Codec?.toLowerCase() || '';
+    const audioCodec = audioStream?.Codec?.toLowerCase() || '';
+
+    // ── Step 2: Check if browser can play natively ───────────────────────────
+    // Browsers support: H.264 video + AAC/MP3 audio in MP4 container
+    const browserCompatibleVideo = ['h264', 'avc1', 'avc'].includes(videoCodec);
+    const browserCompatibleAudio = ['aac', 'mp3', 'mp4a'].includes(audioCodec);
+    const needsTranscoding = !browserCompatibleVideo || !browserCompatibleAudio;
+
+    console.log(`Movie ${tmdbId}: video=${videoCodec} audio=${audioCodec} transcode=${needsTranscoding}`);
+
+    if (!needsTranscoding) {
+      // ── Direct play — no transcoding needed ──────────────────────────────
+      const streamUrl = `/stream/Videos/${jellyfinId}/stream?api_key=${apiKey}&static=true&container=mp4`;
+      return res.json({
+        streamUrl,
+        jellyfinId,
+        type: 'mp4',
+        transcoding: false,
+        videoCodec,
+        audioCodec,
+        subtitles: subtitleStreams,
+      });
+    }
+
+    // ── Step 3: Transcoding needed — ensure Jellyfin user ID is available ────
+    if (!jellyfinUserId) {
+      console.warn('JELLYFIN_USER_ID not set — falling back to direct MP4');
+      const streamUrl = `/stream/Videos/${jellyfinId}/stream?api_key=${apiKey}&static=true&container=mp4`;
+      return res.json({ streamUrl, jellyfinId, type: 'mp4', transcoding: false });
+    }
+
+    // ── Step 4: Request HLS playback session from Jellyfin ───────────────────
+    const playbackRes = await fetch(
+      `${jellyfinInternal}/Items/${jellyfinId}/PlaybackInfo?userId=${jellyfinUserId}&api_key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          DeviceProfile: {
+            TranscodingProfiles: [
+              {
+                Container:      'ts',
+                Type:           'Video',
+                Protocol:       'hls',
+                AudioCodec:     'aac',
+                VideoCodec:     'h264',
+                MaxAudioChannels: '2',
+              }
+            ],
+            DirectPlayProfiles: [],
+            CodecProfiles:      [],
+          }
+        }),
+      }
+    );
+
+    if (!playbackRes.ok) {
+      console.error('PlaybackInfo failed:', playbackRes.status, '— falling back to direct');
+      const streamUrl = `/stream/Videos/${jellyfinId}/stream?api_key=${apiKey}&static=true&container=mp4`;
+      return res.json({ streamUrl, jellyfinId, type: 'mp4', transcoding: false });
+    }
+
+    const playbackInfo  = await playbackRes.json();
+    const playSessionId = playbackInfo.PlaySessionId;
+    const mediaSourceId = playbackInfo.MediaSources?.[0]?.Id || jellyfinId;
+
+    // ── Step 5: Build HLS master playlist URL ────────────────────────────────
+    const params = new URLSearchParams({
+      api_key:                     apiKey,
+      MediaSourceId:               mediaSourceId,
+      PlaySessionId:               playSessionId,
+      VideoCodec:                  'h264',
+      AudioCodec:                  'aac',
+      AudioStreamIndex:            '1',
+      VideoBitrate:                '8000000',
+      AudioBitrate:                '128000',
+      MaxWidth:                    '1920',
+      MaxHeight:                   '1080',
+      TranscodingMaxAudioChannels: '2',
+      SegmentContainer:            'ts',
+      MinSegments:                 '1',
+      BreakOnNonKeyFrames:         'true',
+    });
+
+    const streamUrl = `/stream/Videos/${jellyfinId}/master.m3u8?${params.toString()}`;
 
     res.json({
       streamUrl,
       jellyfinId,
-      directUrl: `${jellyfinUrl}/Items/${jellyfinId}/Download?api_key=${apiKey}`,
+      playSessionId,
+      type:        'hls',
+      transcoding: true,
+      videoCodec,
+      audioCodec,
+      subtitles:   subtitleStreams,
+    });
+
+  } catch (err) {
+    console.error('stream-url error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+// ── GET /api/movies/:tmdbId/user-subtitles ────────────────────────────────────
+router.get('/:tmdbId/user-subtitles', async (req, res) => {
+  try {
+    const { tmdbId } = req.params;
+    const { rows } = await pool.query(
+      `SELECT us.id, us.language, us.label, u.username, us.created_at
+       FROM user_subtitles us
+       JOIN users u ON u.id = us.user_id
+       JOIN movies m ON m.id = us.movie_id
+       WHERE m.tmdb_id = $1
+       ORDER BY us.created_at DESC`,
+      [tmdbId]
+    );
+    res.json({ subtitles: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── GET /api/movies/:tmdbId/subtitle/:subtitleId ──────────────────────────────
+router.get('/:tmdbId/subtitle/:subtitleId', async (req, res) => {
+  try {
+    const { subtitleId } = req.params;
+    const { rows } = await pool.query(
+      'SELECT content_vtt FROM user_subtitles WHERE id = $1',
+      [subtitleId]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Subtitle not found' });
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.send(rows[0].content_vtt);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── POST /api/movies/:tmdbId/subtitle ─────────────────────────────────────────
+router.post('/:tmdbId/subtitle', requireAuth, async (req, res) => {
+  try {
+    const { tmdbId } = req.params;
+    const { content, language = 'en', label = 'Custom' } = req.body;
+
+    if (!content?.trim())          return res.status(400).json({ error: 'Subtitle content required' });
+    if (content.length > 2_000_000) return res.status(400).json({ error: 'File too large (max 2 MB)' });
+
+    // Convert SRT → VTT if needed (replace comma ms separator, add WEBVTT header)
+    let vttContent = content.trim();
+    if (!vttContent.startsWith('WEBVTT')) {
+      vttContent = 'WEBVTT\n\n' + vttContent.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+    }
+
+    const { rows: movie } = await pool.query(
+      'SELECT id FROM movies WHERE tmdb_id = $1', [tmdbId]
+    );
+    if (!movie[0]) return res.status(404).json({ error: 'Movie not found' });
+
+    const { rows: [sub] } = await pool.query(
+      `INSERT INTO user_subtitles (user_id, movie_id, language, label, content_vtt)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, language, label, created_at`,
+      [req.user.id, movie[0].id, language.slice(0, 10), label.slice(0, 100), vttContent]
+    );
+
+    res.status(201).json({
+      subtitle: { ...sub, username: req.user.username },
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 });
+
 router.post('/:tmdbId/progress', requireAuth, async (req, res) => {
   try {
     const { tmdbId } = req.params;
@@ -397,6 +713,66 @@ router.post('/:tmdbId/progress', requireAuth, async (req, res) => {
     );
 
     res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+
+// ── GET /api/movies/subtitles/search — OpenSubtitles search ──────────────────
+router.get('/subtitles/search', async (req, res) => {
+  try {
+    const key = process.env.OPENSUBTITLES_KEY;
+    if (!key) return res.json({ subtitles: [] });
+
+    const { tmdb_id, languages = 'en', query } = req.query;
+    const params = new URLSearchParams({ languages });
+    if (tmdb_id) params.set('tmdb_id', tmdb_id);
+    if (query)   params.set('query', query);
+    params.set('type', 'movie');
+
+    const osRes = await fetch(
+      `https://api.opensubtitles.com/api/v1/subtitles?${params}`,
+      { headers: { 'Api-Key': key, 'Content-Type': 'application/json' } }
+    );
+    if (!osRes.ok) return res.status(502).json({ error: 'OpenSubtitles unavailable' });
+    const data = await osRes.json();
+
+    const subtitles = (data.data || []).slice(0, 20).map(s => ({
+      id:          s.id,
+      language:    s.attributes.language,
+      release:     s.attributes.release,
+      downloads:   s.attributes.download_count,
+      fps:         s.attributes.fps,
+      file_id:     s.attributes.files?.[0]?.file_id,
+      file_name:   s.attributes.files?.[0]?.file_name,
+    }));
+
+    res.json({ subtitles });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── POST /api/movies/subtitles/download — proxy OpenSubtitles download ────────
+router.post('/subtitles/download', requireAuth, async (req, res) => {
+  try {
+    const key = process.env.OPENSUBTITLES_KEY;
+    if (!key) return res.status(503).json({ error: 'OpenSubtitles not configured' });
+
+    const { file_id } = req.body;
+    if (!file_id) return res.status(400).json({ error: 'file_id required' });
+
+    const dlRes = await fetch('https://api.opensubtitles.com/api/v1/download', {
+      method: 'POST',
+      headers: { 'Api-Key': key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id }),
+    });
+    if (!dlRes.ok) return res.status(502).json({ error: 'Download failed' });
+    const { link } = await dlRes.json();
+    res.json({ link });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

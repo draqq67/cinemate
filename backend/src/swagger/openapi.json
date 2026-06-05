@@ -1,0 +1,716 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Cinemate API",
+    "description": "Full-stack movie streaming and recommendation platform. Data served from PostgreSQL (browse/ratings/comments) + TMDB API (rich movie detail, cast, trailers).",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "/api", "description": "Reverse-proxied through Nginx" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "accessToken",
+        "description": "HttpOnly JWT cookie set on login/register"
+      }
+    },
+    "schemas": {
+      "Movie": {
+        "type": "object",
+        "properties": {
+          "tmdb_id":      { "type": "integer" },
+          "title":        { "type": "string" },
+          "year":         { "type": "integer" },
+          "runtime":      { "type": "integer", "description": "Minutes" },
+          "poster_path":  { "type": "string" },
+          "backdrop_path":{ "type": "string" },
+          "overview":     { "type": "string" },
+          "tagline":      { "type": "string" },
+          "vote_average": { "type": "number" },
+          "vote_count":   { "type": "integer" },
+          "avg_rating":   { "type": "number", "description": "Community average (1–10)" },
+          "rating_count": { "type": "integer" },
+          "popularity":   { "type": "number" },
+          "jellyfin_id":  { "type": "string", "nullable": true },
+          "genres":       { "type": "array", "items": { "type": "string" } },
+          "status":       { "type": "string" },
+          "original_title":    { "type": "string" },
+          "original_language": { "type": "string" },
+          "budget":   { "type": "integer" },
+          "revenue":  { "type": "integer" },
+          "imdb_id":  { "type": "string" },
+          "production_companies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id":        { "type": "integer" },
+                "name":      { "type": "string" },
+                "logo_path": { "type": "string" }
+              }
+            }
+          },
+          "countries": {
+            "type": "array",
+            "items": { "type": "object", "properties": { "iso_code": { "type": "string" }, "name": { "type": "string" } } }
+          },
+          "languages": {
+            "type": "array",
+            "items": { "type": "object", "properties": { "iso_code": { "type": "string" }, "english_name": { "type": "string" } } }
+          },
+          "keywords": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "CastMember": {
+        "type": "object",
+        "properties": {
+          "id":           { "type": "integer" },
+          "name":         { "type": "string" },
+          "character":    { "type": "string" },
+          "profile_path": { "type": "string" },
+          "cast_order":   { "type": "integer" }
+        }
+      },
+      "CrewMember": {
+        "type": "object",
+        "properties": {
+          "id":           { "type": "integer" },
+          "name":         { "type": "string" },
+          "job":          { "type": "string" },
+          "department":   { "type": "string" },
+          "profile_path": { "type": "string" }
+        }
+      },
+      "Comment": {
+        "type": "object",
+        "properties": {
+          "id":          { "type": "string", "format": "uuid" },
+          "body":        { "type": "string" },
+          "created_at":  { "type": "string", "format": "date-time" },
+          "parent_id":   { "type": "string", "format": "uuid", "nullable": true },
+          "username":    { "type": "string" },
+          "user_rating": { "type": "integer", "nullable": true }
+        }
+      },
+      "Trailer": {
+        "type": "object",
+        "properties": {
+          "key":  { "type": "string", "description": "YouTube video ID" },
+          "name": { "type": "string" }
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id":         { "type": "string", "format": "uuid" },
+          "email":      { "type": "string" },
+          "username":   { "type": "string" },
+          "role":       { "type": "string", "enum": ["user", "admin"] },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Subtitle": {
+        "type": "object",
+        "properties": {
+          "id":       { "type": "string", "format": "uuid" },
+          "language": { "type": "string" },
+          "label":    { "type": "string" },
+          "username": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/auth/register": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Register a new user",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "username", "password"],
+                "properties": {
+                  "email":    { "type": "string" },
+                  "username": { "type": "string" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Registered — sets HttpOnly JWT cookies" },
+          "409": { "description": "Email or username already taken" }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Login",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email":    { "type": "string" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK — sets HttpOnly JWT cookies" },
+          "401": { "description": "Invalid credentials" }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Logout — clears cookies",
+        "responses": { "200": { "description": "Cookies cleared" } }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Get current authenticated user",
+        "security": [{ "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "User object", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
+          "401": { "description": "Not authenticated" }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Rotate refresh token",
+        "responses": { "200": { "description": "New access token set in cookie" } }
+      }
+    },
+    "/movies": {
+      "get": {
+        "tags": ["Movies"],
+        "summary": "Browse movies",
+        "parameters": [
+          { "name": "search",  "in": "query", "schema": { "type": "string" } },
+          { "name": "genre",   "in": "query", "schema": { "type": "string" } },
+          { "name": "year",    "in": "query", "schema": { "type": "integer" } },
+          { "name": "sort",    "in": "query", "schema": { "type": "string", "enum": ["popularity", "rating", "newest", "oldest", "title", "vote_count"] } },
+          { "name": "page",    "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "limit",   "in": "query", "schema": { "type": "integer", "default": 20 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated movies list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "movies": { "type": "array", "items": { "$ref": "#/components/schemas/Movie" } },
+                    "total":  { "type": "integer" },
+                    "page":   { "type": "integer" },
+                    "pages":  { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/movies/genres": {
+      "get": {
+        "tags": ["Movies"],
+        "summary": "List all genres with movie counts",
+        "responses": {
+          "200": { "description": "Array of genres", "content": { "application/json": { "schema": { "type": "object", "properties": { "genres": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "integer" }, "name": { "type": "string" }, "count": { "type": "integer" } } } } } } } } }
+        }
+      }
+    },
+    "/movies/{tmdbId}": {
+      "get": {
+        "tags": ["Movies"],
+        "summary": "Full movie detail — DB data merged with live TMDB API (cast, crew, trailers, reviews)",
+        "parameters": [
+          { "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Movie detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "movie":       { "$ref": "#/components/schemas/Movie" },
+                    "cast":        { "type": "array", "items": { "$ref": "#/components/schemas/CastMember" } },
+                    "crew":        { "type": "array", "items": { "$ref": "#/components/schemas/CrewMember" } },
+                    "tmdbReviews": { "type": "array", "items": { "type": "object" } },
+                    "comments":    { "type": "array", "items": { "$ref": "#/components/schemas/Comment" } },
+                    "trailers":    { "type": "array", "items": { "$ref": "#/components/schemas/Trailer" } }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Movie not in DB" }
+        }
+      }
+    },
+    "/movies/{tmdbId}/rate": {
+      "post": {
+        "tags": ["Movies"],
+        "summary": "Rate a movie (1–10)",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "score": { "type": "integer", "minimum": 1, "maximum": 10 } } } } }
+        },
+        "responses": { "200": { "description": "Rating saved; returns updated avg_rating and rating_count" } }
+      }
+    },
+    "/movies/{tmdbId}/my-rating": {
+      "get": {
+        "tags": ["Movies"],
+        "summary": "Get your rating for a movie",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "{ score: number | null }" } }
+      }
+    },
+    "/movies/{tmdbId}/comments": {
+      "post": {
+        "tags": ["Movies"],
+        "summary": "Post a comment on a movie",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "body": { "type": "string" }, "parent_id": { "type": "string", "format": "uuid" } } } } }
+        },
+        "responses": { "201": { "description": "Comment created" } }
+      }
+    },
+    "/movies/{tmdbId}/watchlist": {
+      "get": {
+        "tags": ["Movies"],
+        "summary": "Check if movie is in your watchlist",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "{ inWatchlist: boolean }" } }
+      },
+      "post": {
+        "tags": ["Movies"],
+        "summary": "Toggle movie in/out of watchlist",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "{ added: boolean }" } }
+      }
+    },
+    "/movies/{tmdbId}/stream-url": {
+      "get": {
+        "tags": ["Movies"],
+        "summary": "Get streaming URL (direct MP4 or HLS) from Jellyfin",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": {
+          "200": { "description": "{ streamUrl, jellyfinId, type: 'mp4'|'hls', transcoding, subtitles[] }" },
+          "404": { "description": "Movie not found or no stream available" }
+        }
+      }
+    },
+    "/movies/{tmdbId}/progress": {
+      "post": {
+        "tags": ["Movies"],
+        "summary": "Save watch progress",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "progress_s": { "type": "integer", "description": "Seconds watched" } } } } }
+        },
+        "responses": { "200": { "description": "{ ok: true }" } }
+      }
+    },
+    "/movies/{tmdbId}/user-subtitles": {
+      "get": {
+        "tags": ["Movies"],
+        "summary": "List community-uploaded subtitle tracks",
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "{ subtitles: Subtitle[] }" } }
+      }
+    },
+    "/movies/{tmdbId}/subtitle": {
+      "post": {
+        "tags": ["Movies"],
+        "summary": "Upload a subtitle (SRT or VTT). Auto-converted to VTT.",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "content": { "type": "string" }, "language": { "type": "string", "example": "en" }, "label": { "type": "string", "example": "English SDH" } } } } }
+        },
+        "responses": { "201": { "description": "Subtitle saved" } }
+      }
+    },
+    "/movies/subtitles/search": {
+      "get": {
+        "tags": ["Movies"],
+        "summary": "Search OpenSubtitles (requires OPENSUBTITLES_KEY env var)",
+        "parameters": [
+          { "name": "tmdb_id",   "in": "query", "schema": { "type": "integer" } },
+          { "name": "languages", "in": "query", "schema": { "type": "string", "default": "en" } },
+          { "name": "query",     "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "{ subtitles: [] } — empty if key not configured" } }
+      }
+    },
+    "/movies/subtitles/download": {
+      "post": {
+        "tags": ["Movies"],
+        "summary": "Proxy OpenSubtitles download link",
+        "security": [{ "cookieAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "file_id": { "type": "integer" } } } } }
+        },
+        "responses": { "200": { "description": "{ link: string }" } }
+      }
+    },
+    "/users/me/stats": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Your profile stats",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "{ watched, rated, wishlist, avgRating }" } }
+      }
+    },
+    "/users/me/history": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Your watch history with progress",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of movies with progress_s" } }
+      }
+    },
+    "/users/me/favourites": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Movies you rated ≥ 8",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of movies" } }
+      }
+    },
+    "/users/me/wishlist": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Your watchlist movies",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of movies" } }
+      }
+    },
+    "/users/me/comments": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Your comments with movie titles",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of comments" } }
+      }
+    },
+    "/users/me/ratings": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "All your movie ratings",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of ratings" } }
+      }
+    },
+    "/activity/feed": {
+      "get": {
+        "tags": ["Activity"],
+        "summary": "Feed of people you follow — ratings, comments, watch history",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of activity events" } }
+      }
+    },
+    "/activity/analytics": {
+      "get": {
+        "tags": ["Activity"],
+        "summary": "Personal watch analytics — hours, genres, streaks, by-day/hour breakdown",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Analytics object" } }
+      }
+    },
+    "/activity/follow/{userId}": {
+      "get": {
+        "tags": ["Activity"],
+        "summary": "Check if you follow a user",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "userId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "{ following: boolean }" } }
+      },
+      "post": {
+        "tags": ["Activity"],
+        "summary": "Toggle follow/unfollow a user",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "userId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "{ following: boolean }" } }
+      }
+    },
+    "/lists": {
+      "get": {
+        "tags": ["Lists"],
+        "summary": "Browse public lists",
+        "responses": { "200": { "description": "Array of lists" } }
+      },
+      "post": {
+        "tags": ["Lists"],
+        "summary": "Create a list",
+        "security": [{ "cookieAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "title": { "type": "string" }, "description": { "type": "string" }, "is_public": { "type": "boolean" } } } } }
+        },
+        "responses": { "201": { "description": "List created" } }
+      }
+    },
+    "/lists/mine": {
+      "get": {
+        "tags": ["Lists"],
+        "summary": "Your lists",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of your lists" } }
+      }
+    },
+    "/lists/{id}": {
+      "get": {
+        "tags": ["Lists"],
+        "summary": "Get list detail with movies",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "List with movies array" } }
+      },
+      "put": {
+        "tags": ["Lists"],
+        "summary": "Update list metadata",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Updated list" } }
+      },
+      "delete": {
+        "tags": ["Lists"],
+        "summary": "Delete a list",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/lists/{id}/movies": {
+      "post": {
+        "tags": ["Lists"],
+        "summary": "Add a movie to a list",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "tmdbId": { "type": "integer" } } } } }
+        },
+        "responses": { "201": { "description": "Movie added" } }
+      }
+    },
+    "/party": {
+      "post": {
+        "tags": ["Watch Party"],
+        "summary": "Create a watch party room",
+        "security": [{ "cookieAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "tmdbId": { "type": "integer" } } } } }
+        },
+        "responses": { "201": { "description": "{ room_code, tmdb_id, title }" } }
+      }
+    },
+    "/party/{code}": {
+      "get": {
+        "tags": ["Watch Party"],
+        "summary": "Get room info, messages, online members",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "{ room, messages, online_members }" } }
+      },
+      "delete": {
+        "tags": ["Watch Party"],
+        "summary": "End a watch party (host only)",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Room ended" } }
+      }
+    },
+    "/people/{personId}": {
+      "get": {
+        "tags": ["People"],
+        "summary": "Actor/director detail — proxied from TMDB (not stored in DB)",
+        "parameters": [{ "name": "personId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Person detail with acting credits and directed films" } }
+      }
+    },
+    "/recommendations": {
+      "get": {
+        "tags": ["Recommendations"],
+        "summary": "Personalised movie recommendations (ML service)",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of recommended movies" } }
+      }
+    },
+    "/recommendations/similar/{tmdbId}": {
+      "get": {
+        "tags": ["Recommendations"],
+        "summary": "Movies similar to a given film",
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Array of similar movies" } }
+      }
+    },
+    "/admin/stats": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "Platform statistics",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "{ movies, streamable, users, comments, ratings, subtitles, watchlist_entries }" } }
+      }
+    },
+    "/admin/movies": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "Paginated movie list with Jellyfin link status",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "page",   "in": "query", "schema": { "type": "integer" } },
+          { "name": "limit",  "in": "query", "schema": { "type": "integer" } },
+          { "name": "linked", "in": "query", "schema": { "type": "string", "enum": ["true", "false"] } }
+        ],
+        "responses": { "200": { "description": "Paginated movies with genres" } }
+      }
+    },
+    "/admin/movies/{tmdbId}/jellyfin": {
+      "put": {
+        "tags": ["Admin"],
+        "summary": "Link a Jellyfin item to a movie",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "jellyfinId": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Linked" } }
+      },
+      "delete": {
+        "tags": ["Admin"],
+        "summary": "Unlink Jellyfin item",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Unlinked" } }
+      }
+    },
+    "/admin/movies/{tmdbId}/upload-video": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Upload video file to /media/movies/; triggers Jellyfin scan + auto-links",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "tmdbId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "properties": { "video": { "type": "string", "format": "binary" } } } } } },
+        "responses": { "200": { "description": "Upload started; Jellyfin auto-link polls for 30s" } }
+      }
+    },
+    "/admin/jellyfin/library": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "List Jellyfin library movies",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "search", "in": "query", "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Array of Jellyfin items { id, name, year, tmdb, path, runtime }" } }
+      }
+    },
+    "/admin/jellyfin/health": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "Jellyfin health — server info, active streams, scan status",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "{ online, version, server_name, active_streams, sessions[], library_movie_count, scan_running }" } }
+      }
+    },
+    "/admin/comments": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "Paginated all-comments view",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of comments with user and movie info" } }
+      }
+    },
+    "/admin/comments/{id}": {
+      "delete": {
+        "tags": ["Admin"],
+        "summary": "Delete a comment",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/admin/users": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "Paginated users list with activity counts",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of users" } }
+      }
+    },
+    "/admin/users/{id}/role": {
+      "put": {
+        "tags": ["Admin"],
+        "summary": "Change a user's role",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "role": { "type": "string", "enum": ["user", "admin"] } } } } } },
+        "responses": { "200": { "description": "Role updated" } }
+      }
+    },
+    "/admin/users/{id}": {
+      "delete": {
+        "tags": ["Admin"],
+        "summary": "Delete a user (cannot delete own account)",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/admin/subtitles": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "All community subtitles",
+        "security": [{ "cookieAuth": [] }],
+        "responses": { "200": { "description": "Array of subtitles" } }
+      }
+    },
+    "/admin/subtitles/{id}": {
+      "delete": {
+        "tags": ["Admin"],
+        "summary": "Delete a subtitle",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    }
+  }
+}

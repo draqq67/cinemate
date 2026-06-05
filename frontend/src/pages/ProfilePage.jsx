@@ -1,25 +1,35 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import client from '../api/client';
 import Navbar from '../components/ui/Navbar';
 import MovieCard from '../components/ui/MovieCard';
 
+const LABEL = {
+  fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em',
+  textTransform: 'uppercase', color: 'var(--lb-text-muted)',
+  marginBottom: '12px', display: 'block',
+};
+
 function StatBox({ value, label }) {
   return (
-    <div style={{ background: 'var(--color-background-secondary)', borderRadius: '8px', padding: '12px', textAlign: 'center' }}>
-      <div style={{ fontSize: '22px', fontWeight: 500, color: 'var(--color-text-primary)' }}>{value}</div>
-      <div style={{ fontSize: '11px', color: 'var(--color-text-tertiary)', marginTop: '2px' }}>{label}</div>
+    <div style={{
+      background: 'var(--lb-bg-2)', border: '1px solid var(--lb-border)',
+      borderRadius: '4px', padding: '16px', textAlign: 'center',
+    }}>
+      <div style={{ fontSize: '24px', fontWeight: 700, color: 'var(--lb-green)', lineHeight: 1 }}>{value}</div>
+      <div style={{ fontSize: '10px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--lb-text-muted)', marginTop: '6px' }}>{label}</div>
     </div>
   );
 }
 
 export default function ProfilePage() {
   const { user } = useAuth();
-  const [history, setHistory]     = useState([]);
+  const [history, setHistory]       = useState([]);
   const [favourites, setFavourites] = useState([]);
-  const [wishlist, setWishlist]   = useState([]);
-  const [comments, setComments]   = useState([]);
-  const [stats, setStats]         = useState({ watched: 0, rated: 0, wishlist: 0, avgRating: 0 });
+  const [wishlist, setWishlist]     = useState([]);
+  const [comments, setComments]     = useState([]);
+  const [stats, setStats]           = useState({ watched: 0, rated: 0, wishlist: 0, avgRating: 0 });
 
   useEffect(() => {
     if (!user) return;
@@ -43,84 +53,117 @@ export default function ProfilePage() {
   const joined = new Date(user.created_at).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--color-background-primary)' }}>
+    <div style={{ minHeight: '100vh', background: 'var(--lb-bg)' }}>
       <Navbar />
-      <div style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 24px' }}>
+      <div style={{ maxWidth: '960px', margin: '0 auto', padding: '40px 24px 80px' }}>
 
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', marginBottom: '24px', paddingBottom: '24px', borderBottom: '0.5px solid var(--color-border-tertiary)' }}>
-          <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#E6F1FB', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px', fontWeight: 500, color: '#0C447C', flexShrink: 0 }}>
+        {/* Profile header */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '20px',
+          marginBottom: '32px', paddingBottom: '28px',
+          borderBottom: '1px solid var(--lb-border)',
+        }}>
+          <div style={{
+            width: 72, height: 72, borderRadius: '50%',
+            background: 'var(--lb-bg-3)', border: '3px solid var(--lb-green)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '22px', fontWeight: 700, color: 'var(--lb-green)', flexShrink: 0,
+          }}>
             {user.username.slice(0, 2).toUpperCase()}
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '20px', fontWeight: 500, color: 'var(--color-text-primary)', marginBottom: '2px' }}>{user.username}</div>
-            <div style={{ fontSize: '12px', color: 'var(--color-text-tertiary)' }}>{user.email} · Member since {joined}</div>
+          <div>
+            <div style={{ fontSize: '22px', fontWeight: 700, color: '#fff', marginBottom: '3px' }}>{user.username}</div>
+            <div style={{ fontSize: '12px', color: 'var(--lb-text-muted)' }}>
+              {user.email} · Member since {joined}
+            </div>
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '28px' }}>
-          <StatBox value={stats.watched} label="Watched" />
-          <StatBox value={stats.rated} label="Rated" />
-          <StatBox value={stats.wishlist} label="Wishlist" />
-          <StatBox value={stats.avgRating ? Number(stats.avgRating).toFixed(1) : '—'} label="Avg rating" />
+        {/* Stats */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '40px' }}>
+          <StatBox value={stats.watched}  label="Watched" />
+          <StatBox value={stats.rated}    label="Rated" />
+          <StatBox value={stats.wishlist} label="Watchlist" />
+          <StatBox value={stats.avgRating ? Number(stats.avgRating).toFixed(1) : '—'} label="Avg ★" />
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '32px' }}>
+
+          {/* Left column */}
           <div>
-            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)', marginBottom: '10px' }}>Continue watching</div>
+            <span style={LABEL}>Continue watching</span>
             {history.length === 0
-              ? <div style={{ fontSize: '13px', color: 'var(--color-text-tertiary)' }}>Nothing in progress yet.</div>
+              ? <div style={{ fontSize: '13px', color: 'var(--lb-text-muted)', marginBottom: '28px' }}>Nothing in progress yet.</div>
               : history.map(item => (
-                <div key={item.movie_id} style={{ display: 'flex', gap: '10px', alignItems: 'center', border: '0.5px solid var(--color-border-tertiary)', borderRadius: '8px', padding: '10px', marginBottom: '8px' }}>
-                  <div style={{ width: 36, height: 52, background: 'var(--color-background-secondary)', borderRadius: '4px', flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)' }}>{item.title}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--color-text-tertiary)', marginBottom: '6px' }}>
-                      {Math.round((item.duration - item.progress_s) / 60)}m left
+                <Link key={item.movie_id} to={`/movie/${item.tmdb_id}`} style={{ textDecoration: 'none' }}>
+                  <div style={{
+                    display: 'flex', gap: '10px', alignItems: 'center',
+                    background: 'var(--lb-bg-2)', border: '1px solid var(--lb-border)',
+                    borderRadius: '4px', padding: '10px', marginBottom: '8px',
+                  }}>
+                    <div style={{ width: 36, height: 50, background: 'var(--lb-bg-3)', borderRadius: '3px', flexShrink: 0, overflow: 'hidden' }}>
+                      {item.poster_path && <img src={`https://image.tmdb.org/t/p/w92${item.poster_path}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
                     </div>
-                    <div style={{ height: '3px', background: 'var(--color-border-tertiary)', borderRadius: '2px', overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${Math.round((item.progress_s / item.duration) * 100)}%`, background: '#378ADD', borderRadius: '2px' }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '13px', fontWeight: 600, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.title}</div>
+                      <div style={{ fontSize: '11px', color: 'var(--lb-text-muted)', marginBottom: '7px' }}>
+                        {Math.round(((item.duration || 0) - item.progress_s) / 60)}m left
+                      </div>
+                      <div style={{ height: '2px', background: 'var(--lb-bg-4)', borderRadius: '1px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${Math.min(100, Math.round((item.progress_s / (item.duration || 1)) * 100))}%`, background: 'var(--lb-green)' }} />
+                      </div>
                     </div>
                   </div>
-                </div>
+                </Link>
               ))
             }
 
-            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)', marginBottom: '10px', marginTop: '20px' }}>Recent comments</div>
+            <span style={{ ...LABEL, marginTop: '24px' }}>Recent comments</span>
             {comments.length === 0
-              ? <div style={{ fontSize: '13px', color: 'var(--color-text-tertiary)' }}>No comments yet.</div>
+              ? <div style={{ fontSize: '13px', color: 'var(--lb-text-muted)' }}>No comments yet.</div>
               : comments.map(c => (
-                <div key={c.id} style={{ padding: '10px 0', borderBottom: '0.5px solid var(--color-border-tertiary)' }}>
-                  <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--color-text-primary)' }}>{c.movie_title}</div>
-                  <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)', margin: '3px 0' }}>"{c.body}"</div>
-                  <div style={{ fontSize: '10px', color: 'var(--color-text-tertiary)' }}>
+                <div key={c.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--lb-border)' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--lb-text-2)' }}>{c.movie_title}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--lb-text)', margin: '4px 0', fontStyle: 'italic' }}>"{c.body}"</div>
+                  <div style={{ fontSize: '10px', color: 'var(--lb-text-muted)' }}>
                     {new Date(c.created_at).toLocaleDateString()}
-                    {c.score && ` · ★ ${c.score}`}
+                    {c.score && <span style={{ color: 'var(--lb-orange)' }}> · ★ {c.score}</span>}
                   </div>
                 </div>
               ))
             }
           </div>
 
+          {/* Right column */}
           <div>
-            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)', marginBottom: '10px' }}>Favourite films</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px', marginBottom: '24px' }}>
+            <span style={LABEL}>Favourite films</span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px', marginBottom: '32px' }}>
               {favourites.length === 0
-                ? <div style={{ fontSize: '13px', color: 'var(--color-text-tertiary)', gridColumn: 'span 5' }}>No favourites yet.</div>
-                : favourites.map((m, i) => <MovieCard key={m.id} movie={m} index={i} />)
+                ? <div style={{ fontSize: '13px', color: 'var(--lb-text-muted)', gridColumn: 'span 5' }}>No favourites yet. Rate films 8+ to add them.</div>
+                : favourites.map((m) => <MovieCard key={m.tmdb_id || m.id} movie={m} />)
               }
             </div>
 
-            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)', marginBottom: '10px' }}>Wishlist</div>
+            <span style={LABEL}>Watchlist</span>
             {wishlist.length === 0
-              ? <div style={{ fontSize: '13px', color: 'var(--color-text-tertiary)' }}>Nothing saved yet.</div>
+              ? <div style={{ fontSize: '13px', color: 'var(--lb-text-muted)' }}>Nothing saved yet.</div>
               : wishlist.map(m => (
-                <div key={m.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '0.5px solid var(--color-border-tertiary)', borderRadius: '8px', padding: '9px 12px', marginBottom: '6px' }}>
-                  <div>
-                    <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)' }}>{m.title}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--color-text-tertiary)' }}>{m.genre?.[0]} · {m.year}</div>
+                <Link key={m.tmdb_id || m.id} to={`/movie/${m.tmdb_id}`} style={{ textDecoration: 'none' }}>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    background: 'var(--lb-bg-2)', border: '1px solid var(--lb-border)',
+                    borderRadius: '4px', padding: '10px 14px', marginBottom: '6px',
+                    transition: 'border-color 0.15s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--lb-border-2)'}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--lb-border)'}>
+                    <div>
+                      <div style={{ fontSize: '13px', fontWeight: 600, color: '#fff' }}>{m.title}</div>
+                      <div style={{ fontSize: '11px', color: 'var(--lb-text-muted)', marginTop: '2px' }}>{m.genres?.[0]} · {m.year}</div>
+                    </div>
+                    <div style={{ fontSize: '10px', color: 'var(--lb-green)', fontWeight: 600 }}>→</div>
                   </div>
-                  <div style={{ fontSize: '10px', color: 'var(--color-text-tertiary)' }}>saved</div>
-                </div>
+                </Link>
               ))
             }
           </div>

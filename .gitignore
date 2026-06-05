@@ -33,5 +33,13 @@ jellyfin_cache/
 junit.xml
 coverage/
 EOF
+CLAUDE.md
+FEATURES.md
 
-**/cookies.txt
+cookies.txt
+
+# ML data & trained models (large files, not for git)
+ml/notebooks/data/
+ml/notebooks/models/
+ml/data/*.parquet
+ml/models/*.pkl

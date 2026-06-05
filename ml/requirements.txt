@@ -1,2 +1,21 @@
+# Runtime — used by the FastAPI service inside Docker
 fastapi
-uvicorn
+uvicorn[standard]
+psycopg2-binary
+numpy
+pandas
+scikit-learn
+scipy
+scikit-surprise
+implicit
+joblib
+pyarrow
+fastparquet
+# Notebook / exploration only (not needed by the service)
+jupyter
+matplotlib
+seaborn
+plotly
+
+# Data simulation script
+bcrypt

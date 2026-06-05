@@ -16,6 +16,8 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    volumes:
+      - /home/dragos/media:/media
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,9 +51,21 @@ services:
   ml:
     build: ./ml
     env_file: .env
+    environment:
+      GENOME_PATH: /app/data/genome_vectors.parquet
+      MODELS_DIR: /app/models
+      MODEL_TTL_HOURS: "24"
+      OPENBLAS_NUM_THREADS: "1"
+    volumes:
+      - ./ml/data:/app/data:ro
+      - ml_models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   pg_data:
   jellyfin_config:
   jellyfin_cache:
+  ml_models:
