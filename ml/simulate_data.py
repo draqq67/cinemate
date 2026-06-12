@@ -309,7 +309,84 @@ def main():
     """, all_follows, page_size=500)
 
     conn.commit()
-    cur.close(); cur2.close(); conn.close()
+
+    # ── DMs between mutual follows ─────────────────────────────────────────────
+    print('Generating DM threads between mutual followers …')
+    follow_set  = set(all_follows)
+    mutual_pairs = [(a, b) for (a, b) in follow_set if (b, a) in follow_set and a < b]
+    rng.shuffle(mutual_pairs)
+
+    DM_TEXTS = [
+        "have you seen this one?", "you'd love this", "watched it last night — incredible",
+        "not really for me honestly", "this one slapped", "omg yes, one of my favs",
+        "heard great things, haven't tried it yet", "the ending destroyed me",
+        "perfect for a lazy sunday", "this was so underrated", "couldn't stop watching",
+        "a bit slow at first but worth it", "had no idea what to expect and loved it",
+        "you have to watch this with me sometime", "been meaning to watch this for ages",
+        "i cried lol", "actually really good, don't let the rating fool you",
+        "so different from everything else out there", "second time watching still hits hard",
+        "kinda weird but in a good way",
+    ]
+
+    # Pre-fetch movie tmdb_ids for sharing
+    cur3 = conn.cursor()
+    cur3.execute("SELECT tmdb_id FROM movies ORDER BY popularity DESC LIMIT 500")
+    top_tmdb_ids = [r[0] for r in cur3.fetchall()]
+
+    all_threads, all_dm_messages = [], []
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    for (u1, u2) in mutual_pairs[:int(len(mutual_pairs) * 0.6)]:
+        thread_id = str(uuid.uuid4())
+        all_threads.append((thread_id, u1, u2, now - timedelta(days=int(rng.integers(1, 90)))))
+
+        n_msgs = int(rng.integers(4, 15))
+        base_ts = now - timedelta(days=int(rng.integers(1, 90)))
+        senders = [u1, u2]
+        for j in range(n_msgs):
+            sender = senders[j % 2]
+            ts = base_ts + timedelta(minutes=int(rng.integers(1, 120)) * (j + 1))
+            if rng.random() < 0.30 and top_tmdb_ids:
+                # Movie share
+                movie_tmdb = int(rng.choice(top_tmdb_ids[:200]))
+                all_dm_messages.append((str(uuid.uuid4()), thread_id, sender, None, movie_tmdb, ts))
+            else:
+                body = random.choice(DM_TEXTS)
+                all_dm_messages.append((str(uuid.uuid4()), thread_id, sender, body, None, ts))
+
+    if all_threads:
+        print(f'Inserting {len(all_threads)} DM threads …')
+        psycopg2.extras.execute_values(cur2, """
+            INSERT INTO dm_threads (id, user1_id, user2_id, created_at)
+            VALUES %s ON CONFLICT DO NOTHING
+        """, all_threads)
+
+        print(f'Inserting {len(all_dm_messages)} DM messages …')
+        psycopg2.extras.execute_values(cur2, """
+            INSERT INTO dm_messages (id, thread_id, sender_id, body, movie_tmdb_id, created_at)
+            VALUES %s
+        """, all_dm_messages, page_size=500)
+
+    # ── Recommendation impressions ─────────────────────────────────────────────
+    print('Generating recommendation impressions …')
+    STRATEGIES = ['content-based', 'hybrid (CF 30%)', 'hybrid (CF 70%)', 'popular']
+    all_impressions = []
+    for uid in user_ids:
+        n_imp = int(rng.integers(20, 40))
+        shown_movies = rng.choice(top_tmdb_ids[:300], size=min(n_imp, len(top_tmdb_ids)), replace=False)
+        strategy = random.choice(STRATEGIES)
+        for tmdb_id in shown_movies:
+            shown_at = now - timedelta(days=int(rng.integers(0, 30)), hours=int(rng.integers(0, 23)))
+            all_impressions.append((str(uuid.uuid4()), uid, int(tmdb_id), strategy, shown_at))
+
+    print(f'Inserting {len(all_impressions):,} impressions …')
+    psycopg2.extras.execute_values(cur2, """
+        INSERT INTO recommendation_impressions (id, user_id, tmdb_id, strategy, shown_at)
+        VALUES %s
+    """, all_impressions, page_size=1000)
+
+    conn.commit()
+    cur.close(); cur2.close(); cur3.close(); conn.close()
 
     avg_ratings = len(all_ratings) / len(all_users)
     print(f"""
@@ -320,6 +397,9 @@ Done.
   {len(all_watchlist):>8,} watchlist entries
   {len(all_comments):>8,} comments
   {len(all_follows):>8,} follow relationships
+  {len(all_threads):>8,} DM threads
+  {len(all_dm_messages):>8,} DM messages
+  {len(all_impressions):>8,} recommendation impressions
 
 Export for ML notebook:
   psql -h localhost -p 5433 -U postgres -d cinemate \\

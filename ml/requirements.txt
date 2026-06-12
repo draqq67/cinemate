@@ -1,6 +1,7 @@
 # Runtime — used by the FastAPI service inside Docker
 fastapi
 uvicorn[standard]
+prometheus-fastapi-instrumentator
 psycopg2-binary
 numpy
 pandas
