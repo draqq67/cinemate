@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import Navbar from '../components/ui/Navbar';
+import ErrorState from '../components/ui/ErrorState';
 import client from '../api/client';
 
 const STATS_CACHE_KEY   = 'analytics_stats_v2';
@@ -261,25 +262,522 @@ function ChartSkeleton({ height = 120 }) {
   );
 }
 
+// ── Behaviour tab ─────────────────────────────────────────────────────────────
+// ── Deep Stats Tab ────────────────────────────────────────────────────────────
+function DeepStatsTab() {
+  const [taste, setTaste]       = useState(null);
+  const [dirs, setDirs]         = useState(null);
+  const [actors, setActors]     = useState(null);
+  const [social, setSocial]     = useState(null);
+  const [miles, setMiles]       = useState(null);
+  const [regret, setRegret]     = useState(null);
+  const [dirsLoading, setDirsLoading] = useState(true);
+  const POSTER = 'https://image.tmdb.org/t/p/w92';
+  const PROFILE = 'https://image.tmdb.org/t/p/w92';
+
+  useEffect(() => {
+    client.get('/activity/analytics/taste-profile').then(r => setTaste(r.data)).catch(() => setTaste({}));
+    // Directors triggers TMDB population — may be slow on first load
+    client.get('/activity/analytics/directors')
+      .then(r => { setDirs(r.data); setDirsLoading(false); })
+      .catch(() => { setDirs({}); setDirsLoading(false); });
+    // Actors uses same cache populated by directors endpoint
+    setTimeout(() => {
+      client.get('/activity/analytics/actors').then(r => setActors(r.data)).catch(() => setActors({}));
+    }, 500); // slight delay so directors runs first
+    client.get('/activity/analytics/social-stats').then(r => setSocial(r.data)).catch(() => setSocial({}));
+    client.get('/activity/analytics/milestones').then(r => setMiles(r.data)).catch(() => setMiles({}));
+    client.get('/activity/analytics/regret').then(r => setRegret(r.data)).catch(() => setRegret({}));
+  }, []);
+
+  const rb = taste?.rating_behaviour;
+  const con = taste?.contrarian;
+  const rec = taste?.recency_bias;
+  const auteur = dirs?.auteur_score;
+
+  const sectionTitle = (t, sub) => (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lb-text-bright)' }}>{t}</div>
+      {sub && <div style={{ fontSize: 11, color: 'var(--lb-text-muted)', marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+
+  const statRow = (label, value, note, color = 'var(--lb-green)') => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--lb-border)' }}>
+      <div>
+        <span style={{ fontSize: 13, color: 'var(--lb-text-2)' }}>{label}</span>
+        {note && <div style={{ fontSize: 11, color: 'var(--lb-text-muted)', marginTop: 2 }}>{note}</div>}
+      </div>
+      <div style={{ fontSize: 16, fontWeight: 700, color }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+      {/* ── TASTE PROFILE ─────────────────────────────────────────────── */}
+      {taste && (
+        <div style={CARD}>
+          {sectionTitle('🎭 Taste profile', 'How you watch and rate')}
+          {rb && (<>
+            {statRow('Rating generosity',
+              `${rb.your_avg > 0 ? rb.your_avg.toFixed(1) : '—'} / 10`,
+              `Platform avg: ${rb.platform_avg?.toFixed(1)} — you rate ${rb.generosity_delta > 0 ? '+' : ''}${rb.generosity_delta?.toFixed(1)} vs average`,
+              rb.generosity_delta > 0.5 ? '#10b981' : rb.generosity_delta < -0.5 ? 'var(--lb-danger)' : 'var(--lb-text-2)'
+            )}
+            {statRow('Rating consistency',
+              `${rb.consistency_pct}%`,
+              `${rb.total_rated} rated out of ${rb.total_watched} watched`,
+              rb.consistency_pct >= 70 ? 'var(--lb-green)' : 'var(--lb-orange)'
+            )}
+          </>)}
+          {con && con.total > 0 && (<>
+            {statRow('Contrarian score',
+              `${con.contrarian_pct}%`,
+              `${con.contrarian_count}/${con.total} ratings diverge ≥3 pts from platform · ${con.harsher_count} harsher, ${con.kinder_count} kinder`,
+              con.contrarian_pct > 30 ? 'var(--lb-orange)' : 'var(--lb-text-2)'
+            )}
+          </>)}
+          {rec && rec.delta !== null && (<>
+            {statRow('Recency bias',
+              rec.delta > 0 ? `+${rec.delta} pts` : `${rec.delta} pts`,
+              `Recent 30d avg: ${rec.recent_avg} · Older avg: ${rec.older_avg}`,
+              Math.abs(rec.delta) > 0.5 ? 'var(--lb-orange)' : 'var(--lb-text-2)'
+            )}
+          </>)}
+        </div>
+      )}
+
+      {/* ── DECADE AFFINITY ───────────────────────────────────────────── */}
+      {taste?.decade_affinity?.length > 0 && (
+        <div style={CARD}>
+          {sectionTitle('📅 Decade affinity')}
+          {(() => {
+            const max = Math.max(...taste.decade_affinity.map(d => d.watches), 1);
+            return taste.decade_affinity.map(d => (
+              <div key={d.decade} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <div style={{ width: 42, fontSize: 11, fontWeight: 600, color: 'var(--lb-text-2)', flexShrink: 0 }}>{d.decade}s</div>
+                <div style={{ flex: 1, background: 'var(--lb-bg-3)', borderRadius: 2, height: 6, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', background: 'var(--lb-green)', width: `${Math.round(d.watches / max * 100)}%` }} />
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--lb-text-muted)', width: 26, textAlign: 'right' }}>{d.watches}</div>
+                {d.avg_score > 0 && <div style={{ fontSize: 10, color: 'var(--lb-orange)', width: 28, textAlign: 'right' }}>★{d.avg_score}</div>}
+              </div>
+            ));
+          })()}
+        </div>
+      )}
+
+      {/* ── RUNTIME PREFERENCE ────────────────────────────────────────── */}
+      {taste?.runtime_buckets?.length > 0 && (
+        <div style={CARD}>
+          {sectionTitle('⏱ Runtime preference')}
+          {(() => {
+            const max = Math.max(...taste.runtime_buckets.map(b => b.watches), 1);
+            return taste.runtime_buckets.map(b => (
+              <div key={b.bucket} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <div style={{ width: 110, fontSize: 11, color: 'var(--lb-text-2)', flexShrink: 0 }}>{b.bucket}</div>
+                <div style={{ flex: 1, background: 'var(--lb-bg-3)', borderRadius: 2, height: 6, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', background: 'var(--lb-orange)', width: `${Math.round(b.watches / max * 100)}%` }} />
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--lb-text-muted)', width: 26, textAlign: 'right' }}>{b.watches}</div>
+                {b.avg_score > 0 && <div style={{ fontSize: 10, color: 'var(--lb-orange)', width: 28, textAlign: 'right' }}>★{b.avg_score}</div>}
+              </div>
+            ));
+          })()}
+        </div>
+      )}
+
+      {/* ── DIRECTOR STATS ────────────────────────────────────────────── */}
+      <div style={CARD}>
+        {sectionTitle('🎬 Director profile', dirsLoading ? 'Loading from TMDB — may take a moment on first visit…' : undefined)}
+        {dirsLoading && <ChartSkeleton height={120} />}
+        {!dirsLoading && dirs && (<>
+          {auteur && auteur.total_watches > 0 && (
+            <div style={{ marginBottom: 16, padding: '12px 14px', background: 'var(--lb-bg-3)', borderRadius: 4 }}>
+              <div style={{ fontSize: 11, color: 'var(--lb-text-muted)', marginBottom: 4 }}>Auteur score</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--lb-green)' }}>{auteur.pct}%</div>
+              <div style={{ fontSize: 11, color: 'var(--lb-text-muted)' }}>of your watches are from directors you've seen 3+ films from</div>
+            </div>
+          )}
+          {dirs.top_by_count?.length > 0 && (
+            <>
+              <div style={{ ...LABEL, marginBottom: 10 }}>Most watched directors</div>
+              {dirs.top_by_count.slice(0, 7).map(d => (
+                <div key={d.director_name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid var(--lb-border)' }}>
+                  <span style={{ fontSize: 13, color: 'var(--lb-text-2)' }}>{d.director_name}</span>
+                  <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--lb-text-muted)' }}>
+                    <span>{d.watches} films</span>
+                    {d.avg_score > 0 && <span style={{ color: 'var(--lb-orange)' }}>★ {d.avg_score}</span>}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+          {dirs.explore_more?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ ...LABEL, marginBottom: 10 }}>Directors to explore (you rated high, seen only 1 film)</div>
+              {dirs.explore_more.map(d => (
+                <div key={d.director_name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--lb-border)' }}>
+                  <span style={{ fontSize: 13, color: 'var(--lb-text-2)' }}>{d.director_name}</span>
+                  <span style={{ fontSize: 11, color: 'var(--lb-green)' }}>you gave ★ {d.avg_score}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {!dirs.top_by_count?.length && (
+            <div style={{ fontSize: 13, color: 'var(--lb-text-muted)' }}>Watch some movies to see director stats.</div>
+          )}
+        </>)}
+      </div>
+
+      {/* ── ACTOR STATS ───────────────────────────────────────────────── */}
+      <div style={CARD}>
+        {sectionTitle('🌟 Actor profile')}
+        {!actors && <ChartSkeleton height={100} />}
+        {actors && (<>
+          {actors.top_by_count?.length > 0 ? (
+            <>
+              <div style={{ ...LABEL, marginBottom: 10 }}>Most seen actors</div>
+              {actors.top_by_count.slice(0, 8).map(a => (
+                <div key={a.actor_name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--lb-border)' }}>
+                  {a.profile_path
+                    ? <img src={`${PROFILE}${a.profile_path}`} alt="" style={{ width: 28, height: 28, objectFit: 'cover', borderRadius: '50%', flexShrink: 0 }} />
+                    : <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--lb-bg-4)', flexShrink: 0 }} />
+                  }
+                  <span style={{ flex: 1, fontSize: 13, color: 'var(--lb-text-2)' }}>{a.actor_name}</span>
+                  <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--lb-text-muted)', flexShrink: 0 }}>
+                    <span>{a.appearances} films</span>
+                    {a.avg_score > 0 && <span style={{ color: 'var(--lb-orange)' }}>★ {a.avg_score}</span>}
+                  </div>
+                </div>
+              ))}
+              {actors.reliable?.length > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ ...LABEL, marginBottom: 8 }}>Your reliable actors (consistently above your avg)</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {actors.reliable.map(a => (
+                      <div key={a.actor_name} style={{ padding: '4px 12px', borderRadius: 20, background: 'var(--lb-green-dim)', border: '1px solid var(--lb-green)', fontSize: 11, color: 'var(--lb-green)' }}>
+                        {a.actor_name} <span style={{ opacity: 0.7 }}>+{a.above_your_avg}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {actors.blind_spots?.length > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ ...LABEL, marginBottom: 8 }}>Platform blind spots (highly rated actors you've never seen)</div>
+                  {actors.blind_spots.map(a => (
+                    <div key={a.actor_name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--lb-border)' }}>
+                      <span style={{ fontSize: 13, color: 'var(--lb-text-2)' }}>{a.actor_name}</span>
+                      <span style={{ fontSize: 11, color: 'var(--lb-text-muted)' }}>{a.platform_films} films · avg ★{a.platform_avg}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ fontSize: 13, color: 'var(--lb-text-muted)' }}>Director data loads first — actor stats appear after.</div>
+          )}
+        </>)}
+      </div>
+
+      {/* ── SOCIAL STATS ─────────────────────────────────────────────── */}
+      {social && (
+        <div style={CARD}>
+          {sectionTitle('👥 Social taste')}
+          {social.overlap?.length > 0 ? (
+            <>
+              <div style={{ ...LABEL, marginBottom: 10 }}>Taste overlap with people you follow</div>
+              {social.overlap.map(u => (
+                <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--lb-border)' }}>
+                  <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--lb-bg-3)', border: '1px solid var(--lb-green)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'var(--lb-green)', flexShrink: 0 }}>
+                    {u.username.slice(0,2).toUpperCase()}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: 'var(--lb-text-bright)' }}>{u.username}</div>
+                    <div style={{ fontSize: 11, color: 'var(--lb-text-muted)' }}>{u.shared_movies} films in common</div>
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: parseFloat(u.overlap_pct) > 30 ? 'var(--lb-green)' : 'var(--lb-orange)' }}>
+                    {u.overlap_pct}%
+                  </div>
+                </div>
+              ))}
+            </>
+          ) : (
+            <div style={{ fontSize: 13, color: 'var(--lb-text-muted)' }}>Follow users to see taste overlap.</div>
+          )}
+          {social.disagreements?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ ...LABEL, marginBottom: 10 }}>Biggest rating disagreements</div>
+              {social.disagreements.slice(0, 5).map((d, i) => (
+                <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--lb-border)' }}>
+                  {d.poster_path && <img src={`${POSTER}${d.poster_path}`} alt="" style={{ width: 24, height: 36, objectFit: 'cover', borderRadius: 2, flexShrink: 0 }} />}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.title}</div>
+                    <div style={{ fontSize: 10, color: 'var(--lb-text-muted)' }}>You: {d.my_score} · {d.their_username}: {d.their_score}</div>
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--lb-danger)', flexShrink: 0 }}>Δ{d.diff}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── MILESTONES ────────────────────────────────────────────────── */}
+      {miles && (
+        <div style={CARD}>
+          {sectionTitle('🏆 Milestones')}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 10, marginBottom: 16 }}>
+            {miles.milestones?.map(m => (
+              <div key={m.n} style={{
+                padding: '12px', borderRadius: 6, textAlign: 'center',
+                background: m.reached ? 'var(--lb-green-dim)' : 'var(--lb-bg-3)',
+                border: `1px solid ${m.reached ? 'var(--lb-green)' : 'var(--lb-border)'}`,
+              }}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: m.reached ? 'var(--lb-green)' : 'var(--lb-text-muted)' }}>
+                  {m.reached ? '✓' : `${m.pct_to_next}%`}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--lb-text-muted)', marginTop: 3 }}>{m.n} films</div>
+              </div>
+            ))}
+          </div>
+          {statRow('Longest streak ever', `${miles.longest_streak} days`, 'consecutive days with at least 1 watch')}
+          {statRow('This year vs last', `${miles.this_year} vs ${miles.last_year}`, 'films watched')}
+          {miles.genre_completion?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ ...LABEL, marginBottom: 10 }}>Genre completion</div>
+              {miles.genre_completion.slice(0, 6).map(g => (
+                <div key={g.name} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                  <div style={{ width: 80, fontSize: 11, color: 'var(--lb-text-2)', flexShrink: 0 }}>{g.name}</div>
+                  <div style={{ flex: 1, background: 'var(--lb-bg-3)', borderRadius: 2, height: 5, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', background: g.pct >= 80 ? 'var(--lb-green)' : 'var(--lb-orange)', width: `${g.pct}%` }} />
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--lb-text-muted)', width: 70, textAlign: 'right' }}>{g.watched_count}/{g.catalog_count} ({g.pct}%)</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── REGRET & DISCOVERY ────────────────────────────────────────── */}
+      {regret && (
+        <div style={CARD}>
+          {sectionTitle('🔍 Regret & discovery')}
+          {regret.consensus_mismatches?.length > 0 && (
+            <>
+              <div style={{ ...LABEL, marginBottom: 10 }}>Your biggest opinion splits with the platform</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(70px, 1fr))', gap: 8, marginBottom: 16 }}>
+                {regret.consensus_mismatches.slice(0, 8).map(m => (
+                  <Link key={m.tmdb_id} to={`/movie/${m.tmdb_id}`} title={`${m.title} — you: ${m.your_score}, platform: ${m.platform_avg}`}
+                    style={{ textDecoration: 'none', position: 'relative' }}>
+                    {m.poster_path
+                      ? <img src={`${POSTER}${m.poster_path}`} alt="" style={{ width: '100%', borderRadius: 3, display: 'block', aspectRatio: '2/3', objectFit: 'cover' }} />
+                      : <div style={{ aspectRatio: '2/3', background: 'var(--lb-bg-3)', borderRadius: 3 }} />
+                    }
+                    <div style={{
+                      position: 'absolute', bottom: 3, right: 3,
+                      background: 'rgba(0,0,0,0.85)', borderRadius: 2, fontSize: 9, padding: '1px 3px',
+                      color: m.delta > 0 ? 'var(--lb-green)' : 'var(--lb-danger)',
+                    }}>
+                      {m.delta > 0 ? '+' : ''}{m.delta}
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            </>
+          )}
+          {regret.watchlist_graveyard?.length > 0 && (
+            <>
+              <div style={{ ...LABEL, marginBottom: 10 }}>Watchlist graveyard (6+ months, never watched)</div>
+              {regret.watchlist_graveyard.map(m => (
+                <Link key={m.tmdb_id} to={`/movie/${m.tmdb_id}`}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--lb-border)', textDecoration: 'none' }}>
+                  {m.poster_path && <img src={`${POSTER}${m.poster_path}`} alt="" style={{ width: 22, height: 33, objectFit: 'cover', borderRadius: 2, flexShrink: 0 }} />}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title}</div>
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--lb-text-muted)', flexShrink: 0 }}>{m.days_waiting}d waiting</div>
+                </Link>
+              ))}
+            </>
+          )}
+          {regret.acclaimed_blind_spots?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ ...LABEL, marginBottom: 10 }}>Acclaimed films you haven't seen</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(70px, 1fr))', gap: 8 }}>
+                {regret.acclaimed_blind_spots.map(m => (
+                  <Link key={m.tmdb_id} to={`/movie/${m.tmdb_id}`} title={`${m.title} — TMDB: ${m.vote_average}`}
+                    style={{ textDecoration: 'none' }}>
+                    {m.poster_path
+                      ? <img src={`${POSTER}${m.poster_path}`} alt="" style={{ width: '100%', borderRadius: 3, display: 'block', aspectRatio: '2/3', objectFit: 'cover' }} />
+                      : <div style={{ aspectRatio: '2/3', background: 'var(--lb-bg-3)', borderRadius: 3 }} />
+                    }
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BehaviourTab() {
+  const [abandon, setAbandon]       = useState(null);
+  const [acceptance, setAcceptance] = useState(null);
+  const [genome, setGenome]         = useState(null);
+  const POSTER = 'https://image.tmdb.org/t/p/w92';
+
+  useEffect(() => {
+    client.get('/activity/analytics/abandonment').then(r => setAbandon(r.data.movies || [])).catch(() => setAbandon([]));
+    client.get('/activity/analytics/recommendation-acceptance').then(r => setAcceptance(r.data)).catch(() => setAcceptance(null));
+    client.get('/recommendations/user-genome').then(r => setGenome(r.data)).catch(() => setGenome({}));
+  }, []);
+
+
+
+  const maxTag = genome?.tags?.length ? Math.max(...genome.tags.map(t => t.score), 0.001) : 1;
+  const maxDistinctive = genome?.distinctive_tags?.length ? Math.max(...genome.distinctive_tags.map(t => t.relative), 0.001) : 1;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+      {/* ── GENOME TASTE DNA ───────────────────────────────────────────── */}
+      <div style={CARD}>
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lb-text-bright)' }}>🧬 Taste DNA</div>
+          <div style={{ fontSize: 11, color: 'var(--lb-text-muted)', marginTop: 2 }}>
+            {genome ? `Based on ${genome.n_liked} films you rated ≥7 (${genome.n_with_genome} have genome data)` : 'Loading from ML service…'}
+          </div>
+        </div>
+
+        {!genome && <ChartSkeleton height={140} />}
+
+        {genome && genome.distinctive_tags?.length > 0 && (
+          <>
+            <div style={{ ...LABEL, marginBottom: 10 }}>What makes you unique — tags where you exceed the platform average most</div>
+            {genome.distinctive_tags.slice(0, 12).map(t => (
+              <div key={t.tag} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 7 }}>
+                <div style={{ width: 140, fontSize: 11, color: 'var(--lb-text-2)', fontWeight: 500, flexShrink: 0, textTransform: 'capitalize' }}>{t.tag}</div>
+                <div style={{ flex: 1, background: 'var(--lb-bg-3)', borderRadius: 2, height: 6, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', background: 'var(--lb-green)', width: `${Math.round(t.relative / maxDistinctive * 100)}%` }} />
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--lb-text-muted)', width: 36, textAlign: 'right' }}>+{(t.relative * 100).toFixed(0)}%</div>
+              </div>
+            ))}
+          </>
+        )}
+
+        {genome && genome.tags?.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ ...LABEL, marginBottom: 10 }}>Your strongest genome tags (absolute score in liked films)</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {genome.tags.slice(0, 20).map(t => (
+                <span key={t.tag} style={{
+                  padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600,
+                  background: `rgba(132,136,113,${Math.max(0.1, t.score * 2).toFixed(2)})`,
+                  color: 'var(--lb-text-bright)', border: '1px solid rgba(132,136,113,0.3)',
+                  textTransform: 'capitalize',
+                }}>{t.tag}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {genome && !genome.tags?.length && (
+          <div style={{ fontSize: 13, color: 'var(--lb-text-muted)' }}>
+            Rate at least 10 films ≥7 to see your taste DNA.
+          </div>
+        )}
+      </div>
+
+      {/* Acceptance rate */}
+      {acceptance && (
+        <div style={CARD}>
+          <div style={{ ...LABEL, marginBottom: 16 }}>Recommendation acceptance</div>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 16 }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--lb-green)' }}>{acceptance.acceptance_rate}%</div>
+              <div style={LABEL}>overall rate</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--lb-text-2)' }}>{acceptance.total_shown}</div>
+              <div style={LABEL}>films shown</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--lb-orange)' }}>{acceptance.total_watched}</div>
+              <div style={LABEL}>then watched</div>
+            </div>
+          </div>
+          {acceptance.by_strategy?.map(s => (
+            <div key={s.strategy} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <div style={{ width: 120, fontSize: 11, color: 'var(--lb-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.strategy}</div>
+              <div style={{ flex: 1, background: 'var(--lb-bg-3)', borderRadius: 2, height: 5, overflow: 'hidden' }}>
+                <div style={{ height: '100%', background: 'var(--lb-green)', width: `${Math.min(s.acceptance_rate, 100)}%` }} />
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--lb-text-muted)', width: 32, textAlign: 'right' }}>{s.acceptance_rate}%</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Abandoned films */}
+      <div style={CARD}>
+        <div style={{ ...LABEL, marginBottom: 16 }}>Abandoned films (watched &lt;20%)</div>
+        {!abandon ? <ChartSkeleton height={80} />
+          : abandon.length === 0
+            ? <div style={{ color: 'var(--lb-text-muted)', fontSize: 13 }}>No abandoned films — nice!</div>
+            : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {abandon.map(m => (
+                  <div key={m.tmdb_id} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    {m.poster_path
+                      ? <img src={`${POSTER}${m.poster_path}`} alt="" style={{ width: 28, height: 42, objectFit: 'cover', borderRadius: 2, flexShrink: 0 }} />
+                      : <div style={{ width: 28, height: 42, background: 'var(--lb-bg-3)', borderRadius: 2, flexShrink: 0 }} />
+                    }
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title}</div>
+                      <div style={{ marginTop: 4, height: 4, background: 'var(--lb-bg-3)', borderRadius: 2, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', background: 'var(--lb-danger)', width: `${m.completion_pct || 0}%` }} />
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--lb-danger)', flexShrink: 0 }}>{m.completion_pct}%</div>
+                  </div>
+                ))}
+              </div>
+        }
+      </div>
+    </div>
+  );
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────────
 export default function AnalyticsPage() {
+  const [activeTab, setActiveTab]  = useState('stats');
   const [stats, setStats]         = useState(readCache(STATS_CACHE_KEY));
   const [charts, setCharts]       = useState(readCache(CHARTS_CACHE_KEY));
   const [statsLoading, setStatsLoading]   = useState(!readCache(STATS_CACHE_KEY));
   const [chartsLoading, setChartsLoading] = useState(!readCache(CHARTS_CACHE_KEY));
+  const [statsError, setStatsError]   = useState(false);
+  const [retryCount, setRetryCount]   = useState(0);
+
+  const retry = () => { setStatsError(false); setStatsLoading(true); setChartsLoading(true); setRetryCount(c => c + 1); };
 
   useEffect(() => {
     if (!statsLoading) return;
     client.get('/activity/analytics')
-      .then(r => { setStats(r.data); writeCache(STATS_CACHE_KEY, r.data); })
-      .catch(() => setStats(null))
+      .then(r => { setStats(r.data); setStatsError(false); writeCache(STATS_CACHE_KEY, r.data); })
+      .catch(() => { setStats(null); setStatsError(true); })
       .finally(() => setStatsLoading(false));
 
     client.get('/activity/analytics/charts')
       .then(r => { setCharts(r.data); writeCache(CHARTS_CACHE_KEY, r.data); })
       .catch(() => setCharts(null))
       .finally(() => setChartsLoading(false));
-  }, []);
+  }, [retryCount]);
 
   // merge for convenience
   const data = stats ? { ...stats, ...(charts || {}) } : null;
@@ -301,26 +799,44 @@ export default function AnalyticsPage() {
     <>
       <Navbar />
       <div style={{ maxWidth: 1000, margin: '0 auto', padding: '40px 24px 80px' }}>
-        <div style={{ marginBottom: '32px' }}>
+        <div style={{ marginBottom: '24px' }}>
           <div style={LABEL}>Personal</div>
-          <h1 style={{ margin: '4px 0 0', fontSize: '26px', fontWeight: 700, color: 'var(--lb-text-bright)' }}>
+          <h1 style={{ margin: '4px 0 16px', fontSize: '26px', fontWeight: 700, color: 'var(--lb-text-bright)' }}>
             Watch Statistics
           </h1>
+          <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--lb-border)', flexWrap: 'wrap' }}>
+            {[['stats','Overview'],['behaviour','Behaviour'],['deep','Deep Stats']].map(([id, label]) => (
+              <button key={id} onClick={() => setActiveTab(id)} style={{
+                padding: '8px 18px', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em',
+                textTransform: 'uppercase', background: 'none', border: 'none', cursor: 'pointer',
+                borderBottom: `2px solid ${activeTab === id ? 'var(--lb-green)' : 'transparent'}`,
+                color: activeTab === id ? 'var(--lb-green)' : 'var(--lb-text-muted)',
+                marginBottom: -1, transition: 'color 0.15s',
+              }}>{label}</button>
+            ))}
+          </div>
         </div>
 
-        {statsLoading && (
+        {activeTab === 'behaviour' && <BehaviourTab />}
+        {activeTab === 'deep'      && <DeepStatsTab />}
+
+        {activeTab === 'stats' && statsLoading && (
           <div style={{ color: 'var(--lb-text-muted)', textAlign: 'center', padding: '80px', fontSize: '14px' }}>
             Loading your stats…
           </div>
         )}
 
-        {!statsLoading && !stats && (
+        {activeTab === 'stats' && !statsLoading && statsError && (
+          <ErrorState title="Could not load your stats" onRetry={retry} />
+        )}
+
+        {activeTab === 'stats' && !statsLoading && !statsError && !stats && (
           <div style={{ textAlign: 'center', padding: '80px', color: 'var(--lb-text-muted)', fontSize: '14px' }}>
             Start watching and rating movies to see your stats here.
           </div>
         )}
 
-        {stats && (
+        {activeTab === 'stats' && stats && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
 
             {/* ── Headline stats ─────────────────────────────────────────── */}

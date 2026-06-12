@@ -118,9 +118,11 @@ function CommentItem({ comment, onReply, depth = 0 }) {
           }}>
             {comment.username?.slice(0, 2).toUpperCase()}
           </div>
-          <span style={{ fontSize: '13px', fontWeight: 600, color: '#fff' }}>
+          <Link to={`/user/${comment.user_id}`} style={{ fontSize: '13px', fontWeight: 600, color: '#fff', textDecoration: 'none' }}
+            onMouseEnter={e => e.currentTarget.style.color = 'var(--lb-green)'}
+            onMouseLeave={e => e.currentTarget.style.color = '#fff'}>
             {comment.username}
-          </span>
+          </Link>
           {comment.user_rating && (
             <span style={{
               fontSize: '10px', background: 'rgba(239,159,39,0.15)', color: 'var(--lb-orange)',
@@ -221,8 +223,11 @@ export default function MoviePage() {
   const [trailers, setTrailers]           = useState([]);
   const [partyLoading, setPartyLoading]   = useState(false);
   const [myLists, setMyLists]             = useState([]);
-  const [listModalOpen, setListModalOpen] = useState(false);
-  const [listAdding, setListAdding]       = useState(null);
+  const [listModalOpen, setListModalOpen]   = useState(false);
+  const [listAdding, setListAdding]         = useState(null);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareFollowing, setShareFollowing] = useState([]);
+  const [shareSent, setShareSent]           = useState(null);
 
   const [streamUrl, setStreamUrl]         = useState(null);
   const [streamLoading, setStreamLoading] = useState(false);
@@ -516,7 +521,7 @@ export default function MoviePage() {
         )}
 
         {/* Hero row: poster + info */}
-        <div style={{ display: 'flex', gap: '32px', marginBottom: '36px', alignItems: 'flex-start' }}>
+        <div className="movie-detail-layout" style={{ marginBottom: '36px' }}>
           {movie.poster_path && (
             <img
               src={`${POSTER}${movie.poster_path}`}
@@ -698,7 +703,81 @@ export default function MoviePage() {
                   {partyLoading ? 'Creating…' : '⬡ Watch party'}
                 </button>
               )}
+
+              {/* Send to friend */}
+              {user && (
+                <button
+                  onClick={() => {
+                    setShareSent(null);
+                    import('../api/activity').then(({ getFollowing }) =>
+                      getFollowing(user.id).then(r => setShareFollowing(r.data.following || []))
+                    );
+                    setShareModalOpen(true);
+                  }}
+                  style={{
+                    padding: '8px 14px', borderRadius: '4px', fontSize: '12px',
+                    fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase',
+                    background: 'var(--lb-bg-3)', border: '1px solid var(--lb-border-2)',
+                    color: 'var(--lb-text)', cursor: 'pointer',
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                  }}
+                >
+                  🎬 Send to friend
+                </button>
+              )}
             </div>
+
+            {/* Share to friend modal */}
+            {shareModalOpen && (
+              <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999 }}>
+                <div style={{ background: 'var(--lb-bg-2)', border: '1px solid var(--lb-border)', borderRadius: '6px', padding: '24px', maxWidth: '360px', width: '100%', margin: '0 20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                    <h3 style={{ margin: 0, fontSize: '16px', color: 'var(--lb-text-bright)' }}>Send to a friend</h3>
+                    <button onClick={() => setShareModalOpen(false)} style={{ background: 'none', border: 'none', color: 'var(--lb-text-muted)', cursor: 'pointer', fontSize: '16px' }}>✕</button>
+                  </div>
+                  {shareSent ? (
+                    <div style={{ textAlign: 'center', padding: '20px 0', color: 'var(--lb-green)', fontWeight: 600 }}>
+                      ✓ Sent to {shareSent}!
+                    </div>
+                  ) : shareFollowing.length === 0 ? (
+                    <div style={{ color: 'var(--lb-text-muted)', fontSize: '13px' }}>
+                      You're not following anyone yet. Follow users to send them films.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: 260, overflowY: 'auto' }}>
+                      {shareFollowing.map(u => (
+                        <button
+                          key={u.id}
+                          onClick={async () => {
+                            const { getOrCreateThread, sendMessage } = await import('../api/dm');
+                            try {
+                              const { data } = await getOrCreateThread(u.id);
+                              await sendMessage(data.threadId, null, movie.tmdb_id);
+                              setShareSent(u.username);
+                            } catch {
+                              // User no longer exists — refresh the following list
+                              const { getFollowing } = await import('../api/activity');
+                              getFollowing(user.id).then(r => setShareFollowing(r.data.following || []));
+                            }
+                          }}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '10px',
+                            padding: '10px 14px', borderRadius: '4px', cursor: 'pointer',
+                            background: 'var(--lb-bg-3)', border: '1px solid var(--lb-border-2)',
+                            textAlign: 'left',
+                          }}
+                        >
+                          <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'var(--lb-bg-4)', border: '1px solid var(--lb-green)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 700, color: 'var(--lb-green)', flexShrink: 0 }}>
+                            {u.username.slice(0, 2).toUpperCase()}
+                          </div>
+                          <span style={{ fontSize: '13px', color: 'var(--lb-text-bright)' }}>{u.username}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Add to list modal */}
             {listModalOpen && (
@@ -880,7 +959,7 @@ export default function MoviePage() {
 
         {/* Tab: full cast & crew */}
         {activeTab === 'cast' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+          <div className="detail-grid-2" style={{ gap: '24px' }}>
             <div>
               <div style={{ ...LABEL_STYLE, marginBottom: '14px' }}>Cast</div>
               {cast.map(c => (
@@ -914,7 +993,7 @@ export default function MoviePage() {
 
         {/* Tab: details */}
         {activeTab === 'details' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+          <div className="detail-grid-2" style={{ gap: '10px' }}>
             {[
               ['Status',         movie.status],
               ['Original title', movie.original_title !== movie.title ? movie.original_title : null],

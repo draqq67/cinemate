@@ -1,0 +1,40 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Express backend — custom HTTP metrics via prom-client (backend/src/middleware/metrics.js)
+  - job_name: cinemate-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['backend:4000']
+
+  # FastAPI recommendation service — auto-instrumented via prometheus-fastapi-instrumentator
+  - job_name: cinemate-ml
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['ml:5000']
+
+  # PostgreSQL — connections, transactions, cache hit ratio, table/index stats
+  - job_name: postgres
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Nginx — request rate, active connections (stub_status)
+  - job_name: nginx
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+
+  # Host machine — CPU, memory, disk, network
+  - job_name: node
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # Per-container resource usage (CPU/mem/network per Docker service)
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']

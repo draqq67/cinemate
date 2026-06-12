@@ -182,7 +182,7 @@ export default function WatchPartyPage() {
   return (
     <>
       <Navbar />
-      <div style={{ maxWidth: 1400, margin: '0 auto', padding: '24px', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+      <div className="party-layout" style={{ maxWidth: 1400, margin: '0 auto', padding: '24px' }}>
 
         {/* Main column */}
         <div style={{ flex: '1 1 640px', minWidth: 0 }}>
@@ -324,7 +324,7 @@ export default function WatchPartyPage() {
         </div>
 
         {/* Sidebar */}
-        <div style={{ width: 320, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div className="party-sidebar" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
           {/* Online members */}
           <div style={{ background: 'var(--lb-bg-2)', border: '1px solid var(--lb-border)', borderRadius: '6px', padding: '14px 16px' }}>
@@ -346,13 +346,27 @@ export default function WatchPartyPage() {
           {/* Invite */}
           <div style={{ background: 'var(--lb-bg-2)', border: '1px solid var(--lb-border)', borderRadius: '6px', padding: '14px 16px' }}>
             <div style={{ ...LABEL, marginBottom: '8px' }}>Invite friends</div>
-            <div style={{ display: 'flex', gap: '8px' }}>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
               <input readOnly value={window.location.href} style={{ flex: 1, fontSize: '11px', minWidth: 0 }} onClick={e => e.target.select()} />
               <button onClick={() => navigator.clipboard?.writeText(window.location.href)} style={{
                 padding: '5px 10px', borderRadius: '3px', border: 'none', flexShrink: 0,
                 background: 'var(--lb-bg-3)', color: 'var(--lb-text)', cursor: 'pointer', fontSize: '11px',
               }}>Copy</button>
             </div>
+            <button
+              onClick={async () => {
+                const partyUrl = window.location.href;
+                // Navigate to messages — the URL serves as the share text
+                window.location.href = `/messages?partylink=${encodeURIComponent(partyUrl)}`;
+              }}
+              style={{
+                width: '100%', padding: '7px', borderRadius: '3px', border: '1px solid var(--lb-border-2)',
+                background: 'var(--lb-bg-3)', color: 'var(--lb-text)', cursor: 'pointer',
+                fontSize: '11px', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase',
+              }}
+            >
+              💬 Send invite via DM
+            </button>
           </div>
 
           {/* Chat */}

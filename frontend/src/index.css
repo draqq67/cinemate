@@ -248,3 +248,70 @@ p  { margin: 0; }
   border-color: var(--lb-green);
   color: var(--lb-text-bright);
 }
+
+/* ── Mobile responsive layouts ───────────────────────────────────────────── */
+
+/* MoviePage: two-column detail → single column stack */
+.movie-detail-layout {
+  display: flex;
+  gap: 36px;
+  align-items: flex-start;
+}
+
+@media (max-width: 800px) {
+  .movie-detail-layout {
+    flex-direction: column;
+    gap: 20px;
+  }
+}
+
+/* MoviePage: cast/crew + details two-column grids → single column */
+.detail-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 600px) {
+  .detail-grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* WatchPartyPage: video + chat sidebar → stack */
+.party-layout {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.party-sidebar {
+  width: 320px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 900px) {
+  .party-sidebar {
+    width: 100%;
+  }
+}
+
+/* AdminPage: tab overflow → horizontal scroll */
+.admin-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--lb-border);
+  margin-bottom: 28px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.admin-tabs::-webkit-scrollbar { display: none; }
+
+/* ListsPage / general grid pages */
+@media (max-width: 600px) {
+  .movie-grid {
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 8px;
+  }
+}

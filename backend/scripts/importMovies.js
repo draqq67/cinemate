@@ -1,36 +1,61 @@
+#!/usr/bin/env node
+/**
+ * Import TMDB movies into Cinemate DB.
+ *
+ * Phase 1 — Discover: iterates /discover/movie year-by-year to collect all
+ *   real TMDB IDs (no wasted 404 calls from sequential scanning).
+ * Phase 2 — Detail: concurrent workers fetch /movie/:id and insert into DB.
+ *
+ * Usage:
+ *   node backend/scripts/importMovies.js
+ *   node backend/scripts/importMovies.js --from-year 2000 --to-year 2024
+ *   node backend/scripts/importMovies.js --concurrency 20 --min-votes 50
+ */
 import pg from 'pg';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { parseArgs } from 'util';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '../../.env') });
 
-const { Pool } = pg;
-const pool = new Pool({
-  host: 'localhost',
-  port: 5433,
-  database: process.env.POSTGRES_DB,
-  user: process.env.POSTGRES_USER,
-  password: process.env.POSTGRES_PASSWORD,
-  max: 20, // match CONCURRENCY
+const THIS_YEAR = new Date().getFullYear();
+
+const { values: args } = parseArgs({
+  options: {
+    'from-year':  { type: 'string', default: '1888'       },
+    'to-year':    { type: 'string', default: String(THIS_YEAR) },
+    concurrency:  { type: 'string', default: '15'          },
+    'min-votes':  { type: 'string', default: '50'          },
+  },
 });
 
-const TMDB_TOKEN  = process.env.TMDB_API_TOKEN;
-const BASE        = 'https://api.themoviedb.org/3';
-const HEADERS     = { Authorization: `Bearer ${TMDB_TOKEN}` };
+const FROM_YEAR  = parseInt(args['from-year']);
+const TO_YEAR    = parseInt(args['to-year']);
+const CONCURRENCY = parseInt(args.concurrency);
+const MIN_VOTES  = parseInt(args['min-votes']);
+const MAX_RETRIES = 2;
 
-const START_ID    = 4500;
-const END_ID      = 1000000; // Adjust as needed
-const CONCURRENCY = 10;      // parallel workers (~10 req/s, well within TMDB free tier)
-const MIN_VOTES   = 300;
-const MAX_RETRIES = 1;
+const { Pool } = pg;
+const pool = new Pool({
+  host:     'localhost',
+  port:     5433,
+  database: process.env.POSTGRES_DB,
+  user:     process.env.POSTGRES_USER,
+  password: process.env.POSTGRES_PASSWORD,
+  max:      CONCURRENCY + 4,
+});
+
+const TMDB_TOKEN = process.env.TMDB_API_TOKEN;
+const BASE       = 'https://api.themoviedb.org/3';
+const HEADERS    = { Authorization: `Bearer ${TMDB_TOKEN}` };
+
+if (!TMDB_TOKEN) { console.error('TMDB_API_TOKEN not set in .env'); process.exit(1); }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
 
-async function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function get(url, retries = MAX_RETRIES) {
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -46,33 +71,66 @@ async function get(url, retries = MAX_RETRIES) {
       return res.json();
     } catch (err) {
       if (attempt === retries) throw err;
-      await sleep(200 * (attempt + 1));
+      await sleep(300 * (attempt + 1));
     }
   }
 }
 
-// ── DB helpers ────────────────────────────────────────────────────────────────
+// ── Phase 1: Discover all movie IDs year-by-year ──────────────────────────────
 
-async function savePerson(client, person) {
-  await client.query(
-    `INSERT INTO people (id, name, original_name, gender, profile_path, known_for_department, popularity)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
-     ON CONFLICT (id) DO UPDATE SET
-       popularity   = EXCLUDED.popularity,
-       profile_path = COALESCE(EXCLUDED.profile_path, people.profile_path)`,
-    [
-      person.id,
-      person.name,
-      person.original_name        || null,
-      person.gender               || 0,
-      person.profile_path         || null,
-      person.known_for_department || null,
-      person.popularity           || 0,
-    ]
-  );
+async function discoverYear(year, minVotes) {
+  const ids = new Set();
+  let page = 1;
+
+  while (true) {
+    const url =
+      `${BASE}/discover/movie` +
+      `?primary_release_year=${year}` +
+      `&vote_count.gte=${minVotes}` +
+      `&sort_by=vote_count.desc` +
+      `&page=${page}`;
+
+    const data = await get(url);
+    if (!data || !data.results || data.results.length === 0) break;
+
+    for (const m of data.results) ids.add(m.id);
+
+    if (page >= data.total_pages || page >= 500) break;
+    page++;
+
+    // Respect TMDB rate limit ~40 req/10s; small pause between discover pages
+    await sleep(100);
+  }
+
+  return ids;
 }
 
-// Builds a single multi-row INSERT — far fewer round-trips than one row at a time.
+async function discoverAllIds(fromYear, toYear, minVotes) {
+  const allIds = new Set();
+  const years  = [];
+  for (let y = fromYear; y <= toYear; y++) years.push(y);
+
+  console.log(`Phase 1: Discovering movie IDs for years ${fromYear}–${toYear} (min votes: ${minVotes})`);
+  let done = 0;
+
+  // Process years in small concurrent batches to stay under rate limit
+  const YEAR_BATCH = 3;
+  for (let i = 0; i < years.length; i += YEAR_BATCH) {
+    const batch = years.slice(i, i + YEAR_BATCH);
+    const results = await Promise.all(batch.map(y => discoverYear(y, minVotes)));
+    for (const s of results) for (const id of s) allIds.add(id);
+    done += batch.length;
+    process.stdout.write(
+      `\r  [discover] ${done}/${years.length} years | ${allIds.size.toLocaleString()} IDs found   `
+    );
+  }
+
+  console.log(`\n  Discovered ${allIds.size.toLocaleString()} unique movie IDs\n`);
+  return allIds;
+}
+
+// ── DB helpers ────────────────────────────────────────────────────────────────
+
 function buildBulkInsert(table, cols, rows, conflictAction = 'DO NOTHING') {
   if (!rows.length) return null;
   const width  = cols.length;
@@ -88,132 +146,37 @@ function buildBulkInsert(table, cols, rows, conflictAction = 'DO NOTHING') {
   };
 }
 
-// ── Core import ───────────────────────────────────────────────────────────────
-
-const KEEP_JOBS = new Set([
-  'Director', 'Screenplay', 'Writer', 'Story', 'Novel',
-  'Director of Photography', 'Original Music Composer',
-  'Executive Producer', 'Producer',
-]);
+// ── Phase 2: Fetch detail + insert ────────────────────────────────────────────
 
 async function importMovie(tmdbId, client) {
-  const m = await get(
-    `${BASE}/movie/${tmdbId}?language=en-US&append_to_response=credits,keywords,reviews`
-  );
+  const m = await get(`${BASE}/movie/${tmdbId}?language=en-US`);
 
-  if (!m)                                               return 'not_found';
-  if (!m.overview || !m.poster_path || !m.release_date) return 'skipped';
-  if ((m.vote_count ?? 0) < MIN_VOTES)                  return 'skipped';
+  if (!m)                                       return 'not_found';
+  if (!m.poster_path || !m.release_date)        return 'skipped';
+  if ((m.vote_count ?? 0) < MIN_VOTES)          return 'skipped';
 
   await client.query('BEGIN');
-
   try {
-    // ── Core movie ────────────────────────────────────────────────────────────
     await client.query(
-      `INSERT INTO movies (
-        tmdb_id, imdb_id, title, original_title, overview, tagline,
-        poster_path, backdrop_path, release_date, runtime,
-        budget, revenue, popularity, vote_average, vote_count,
-        original_language, status, homepage, adult
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-      ON CONFLICT (tmdb_id) DO UPDATE SET
-        vote_average = EXCLUDED.vote_average,
-        vote_count   = EXCLUDED.vote_count,
-        popularity   = EXCLUDED.popularity,
-        runtime      = COALESCE(EXCLUDED.runtime, movies.runtime)`,
+      `INSERT INTO movies (tmdb_id, title, poster_path, release_date, runtime, popularity, vote_average, vote_count)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (tmdb_id) DO UPDATE SET
+         vote_average = EXCLUDED.vote_average,
+         vote_count   = EXCLUDED.vote_count,
+         popularity   = EXCLUDED.popularity,
+         runtime      = COALESCE(EXCLUDED.runtime, movies.runtime)`,
       [
-        m.id, m.imdb_id || null, m.title, m.original_title || null,
-        m.overview, m.tagline || null, m.poster_path, m.backdrop_path || null,
-        m.release_date, m.runtime || null, m.budget || 0, m.revenue || 0,
-        m.popularity, m.vote_average, m.vote_count, m.original_language,
-        m.status || null, m.homepage || null, m.adult || false,
+        m.id, m.title, m.poster_path, m.release_date,
+        m.runtime || null, m.popularity, m.vote_average, m.vote_count,
       ]
     );
 
-    // ── Genres (bulk) ─────────────────────────────────────────────────────────
     const genres = m.genres || [];
     if (genres.length) {
-      await client.query(buildBulkInsert('genres', ['id','name'], genres.map(g => [g.id, g.name])));
-      await client.query(buildBulkInsert('movie_genres', ['tmdb_id','genre_id'], genres.map(g => [m.id, g.id])));
-    }
-
-    // ── Production companies (bulk) ───────────────────────────────────────────
-    const companies = m.production_companies || [];
-    if (companies.length) {
-      await client.query(buildBulkInsert(
-        'production_companies', ['id','name','logo_path','origin_country'],
-        companies.map(c => [c.id, c.name, c.logo_path || null, c.origin_country || null])
-      ));
-      await client.query(buildBulkInsert(
-        'movie_production_companies', ['tmdb_id','company_id'],
-        companies.map(c => [m.id, c.id])
-      ));
-    }
-
-    // ── Countries (bulk) ──────────────────────────────────────────────────────
-    const countries = m.production_countries || [];
-    if (countries.length) {
-      await client.query(buildBulkInsert(
-        'movie_countries', ['tmdb_id','iso_code','name'],
-        countries.map(c => [m.id, c.iso_3166_1, c.name])
-      ));
-    }
-
-    // ── Languages (bulk) ──────────────────────────────────────────────────────
-    const langs = m.spoken_languages || [];
-    if (langs.length) {
-      await client.query(buildBulkInsert(
-        'movie_languages', ['tmdb_id','iso_code','name','english_name'],
-        langs.map(l => [m.id, l.iso_639_1, l.name, l.english_name])
-      ));
-    }
-
-    // ── Cast (bulk, top 20) ───────────────────────────────────────────────────
-    const cast = (m.credits?.cast || []).slice(0, 20);
-    for (const c of cast) await savePerson(client, c);
-    if (cast.length) {
-      await client.query(buildBulkInsert(
-        'movie_cast', ['tmdb_id','person_id','character','credit_id','cast_order'],
-        cast.map(c => [m.id, c.id, c.character || null, c.credit_id, c.order])
-      ));
-    }
-
-    // ── Crew (bulk) ───────────────────────────────────────────────────────────
-    const crew = (m.credits?.crew || []).filter(c => KEEP_JOBS.has(c.job));
-    for (const c of crew) await savePerson(client, c);
-    if (crew.length) {
-      await client.query(buildBulkInsert(
-        'movie_crew', ['tmdb_id','person_id','department','job','credit_id'],
-        crew.map(c => [m.id, c.id, c.department || null, c.job, c.credit_id])
-      ));
-    }
-
-    // ── Keywords (bulk) ───────────────────────────────────────────────────────
-    const keywords = m.keywords?.keywords || [];
-    if (keywords.length) {
-      await client.query(buildBulkInsert('keywords', ['id','name'], keywords.map(k => [k.id, k.name])));
-      await client.query(buildBulkInsert(
-        'movie_keywords', ['tmdb_id','keyword_id'],
-        keywords.map(k => [m.id, k.id])
-      ));
-    }
-
-    // ── Reviews (bulk) ────────────────────────────────────────────────────────
-    const reviews = m.reviews?.results || [];
-    if (reviews.length) {
-      await client.query(buildBulkInsert(
-        'movie_reviews',
-        ['id','tmdb_id','author','username','avatar_path','rating','content','tmdb_url','created_at','updated_at'],
-        reviews.map(r => [
-          r.id, m.id, r.author || null,
-          r.author_details?.username   || null,
-          r.author_details?.avatar_path || null,
-          r.author_details?.rating      || null,
-          r.content || null, r.url || null,
-          r.created_at ? new Date(r.created_at) : null,
-          r.updated_at ? new Date(r.updated_at) : null,
-        ])
-      ));
+      const gQ = buildBulkInsert('genres', ['id','name'], genres.map(g => [g.id, g.name]));
+      if (gQ) await client.query(gQ);
+      const mgQ = buildBulkInsert('movie_genres', ['tmdb_id','genre_id'], genres.map(g => [m.id, g.id]));
+      if (mgQ) await client.query(mgQ);
     }
 
     await client.query('COMMIT');
@@ -244,7 +207,6 @@ async function runWorkers(ids, onResult) {
     }
   }
 
-  // Spin up CONCURRENCY workers and let them race through the queue
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 }
 
@@ -253,25 +215,31 @@ async function runWorkers(ids, onResult) {
 async function main() {
   try {
     await pool.query('SELECT 1');
-    console.log('Connected to Postgres on port 5433');
+    console.log(`Connected to Postgres on port 5433`);
   } catch (err) {
     console.error('DB connection failed:', err.message);
     process.exit(1);
   }
 
-  // Load already-imported IDs for resume support
+  // Phase 1: discover all real TMDB IDs for the year range
+  const discoveredIds = await discoverAllIds(FROM_YEAR, TO_YEAR, MIN_VOTES);
+
+  // Load existing IDs from DB to skip re-fetching
   const { rows: existing } = await pool.query('SELECT tmdb_id FROM movies');
   const existingSet = new Set(existing.map(r => r.tmdb_id));
 
-  // Build work queue, skipping already-imported IDs without an API call
-  const ids = [];
-  for (let id = START_ID; id <= END_ID; id++) {
-    if (!existingSet.has(id)) ids.push(id);
-  }
+  const ids = [...discoveredIds].filter(id => !existingSet.has(id));
 
-  console.log(`Already in DB : ${existingSet.size}`);
-  console.log(`IDs to scan   : ${ids.length}  (${START_ID}–${END_ID})`);
-  console.log(`Concurrency   : ${CONCURRENCY} workers\n`);
+  console.log(`Phase 2: Fetching details & inserting`);
+  console.log(`  Already in DB : ${existingSet.size.toLocaleString()}`);
+  console.log(`  New to import : ${ids.length.toLocaleString()}`);
+  console.log(`  Concurrency   : ${CONCURRENCY} workers | Min votes: ${MIN_VOTES}\n`);
+
+  if (ids.length === 0) {
+    console.log('Nothing new to import.');
+    await pool.end();
+    return;
+  }
 
   let inserted = 0, skipped = 0, not_found = 0, failed = 0, done = 0;
   const total     = ids.length;
@@ -286,16 +254,19 @@ async function main() {
 
     const elapsed = (Date.now() - startTime) / 1000;
     const rate    = (done / (elapsed || 1)).toFixed(1);
-    const eta     = Math.round((total - done) / (rate || 1));
+    const eta     = Math.round((total - done) / (parseFloat(rate) || 1));
+    const pct     = ((done / total) * 100).toFixed(1);
     process.stdout.write(
-      `\r  [${done}/${total}] inserted=${inserted} skipped=${skipped} not_found=${not_found} failed=${failed} | ${rate}/s | ETA ${eta}s   `
+      `\r  [${pct}%] ${done.toLocaleString()}/${total.toLocaleString()} | +${inserted} skipped=${skipped} 404=${not_found} err=${failed} | ${rate}/s ETA ${eta}s   `
     );
   });
 
   const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
   console.log(`\n\nFinished in ${elapsed} min`);
-  console.log(`Inserted: ${inserted} | Skipped: ${skipped} | Not found: ${not_found} | Failed: ${failed}`);
+  console.log(`Inserted: ${inserted.toLocaleString()} | Skipped: ${skipped.toLocaleString()} | Not found: ${not_found.toLocaleString()} | Errors: ${failed}`);
 
+  const { rows: [totals] } = await pool.query('SELECT COUNT(*) AS total FROM movies');
+  console.log(`Total movies in DB: ${parseInt(totals.total).toLocaleString()}`);
   await pool.end();
 }
 

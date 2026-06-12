@@ -2,110 +2,101 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import Navbar from '../components/ui/Navbar';
 import MovieCard from '../components/ui/MovieCard';
+import ErrorState from '../components/ui/ErrorState';
 import client from '../api/client';
 
 export default function WatchlistPage() {
-  const [items, setItems]     = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [items, setItems]       = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+
+  // Retry is called from a button click (event handler) — setState here is fine
+  const retry = () => {
+    setLoading(true);
+    setError(false);
+    setRetryCount(c => c + 1);
+  };
 
   useEffect(() => {
-    client.get('/users/me/wishlist?limit=100')
-      .then(({ data }) => setItems(data.items || []))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+    let alive = true;
+    client.get('/users/me/wishlist?limit=200')
+      .then(({ data }) => {
+        if (alive) { setItems(data.items || []); setLoading(false); }
+      })
+      .catch(() => {
+        if (alive) { setError(true); setLoading(false); }
+      });
+    return () => { alive = false; };
+  }, [retryCount]);
 
-  const removeFromWatchlist = async (tmdbId) => {
+  const remove = async (tmdbId) => {
     try {
       await client.post(`/movies/${tmdbId}/watchlist`);
       setItems(prev => prev.filter(m => m.tmdb_id !== tmdbId));
-    } catch (err) {
-      console.error(err);
-    }
+    } catch { /* silent — user can retry */ }
   };
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--color-background-primary)' }}>
+    <div style={{ minHeight: '100vh', background: 'var(--lb-bg)' }}>
       <Navbar />
-      <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '32px 24px 60px' }}>
+      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '32px var(--page-px) 80px' }}>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
           <div>
-            <h1 style={{ fontSize: '22px', fontWeight: 500, marginBottom: '4px' }}>My watchlist</h1>
-            <p style={{ fontSize: '13px', color: 'var(--color-text-tertiary)' }}>
-              {loading ? 'Loading...' : `${items.length} ${items.length === 1 ? 'movie' : 'movies'} saved`}
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--lb-text-bright)' }}>My watchlist</h1>
+            <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--lb-text-muted)' }}>
+              {loading ? 'Loading…' : error ? '' : `${items.length} ${items.length === 1 ? 'film' : 'films'} saved`}
             </p>
           </div>
-          <Link
-            to="/browse"
-            style={{ fontSize: '13px', color: 'var(--color-text-info)', textDecoration: 'none' }}
-          >
-            + Browse movies
+          <Link to="/browse" style={{ fontSize: 12, fontWeight: 600, color: 'var(--lb-green)', textDecoration: 'none' }}>
+            + Browse films
           </Link>
         </div>
 
-        {loading ? (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
-            gap: '12px',
-          }}>
-            {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} style={{
-                aspectRatio: '2/3',
-                background: 'var(--color-background-secondary)',
-                borderRadius: '8px',
-                border: '0.5px solid var(--color-border-tertiary)',
-              }} />
+        {loading && (
+          <div className="movie-grid">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <div key={i} className="skeleton" style={{ aspectRatio: '2/3' }} />
             ))}
           </div>
-        ) : items.length === 0 ? (
-          <div style={{
-            textAlign: 'center', padding: '80px 0',
-            color: 'var(--color-text-tertiary)',
-          }}>
-            <div style={{ fontSize: '32px', marginBottom: '12px' }}>🎬</div>
-            <div style={{ fontSize: '15px', fontWeight: 500, marginBottom: '6px', color: 'var(--color-text-primary)' }}>
+        )}
+
+        {!loading && error && (
+          <ErrorState title="Could not load watchlist" onRetry={retry} />
+        )}
+
+        {!loading && !error && items.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '80px 0' }}>
+            <div style={{ fontSize: 36, marginBottom: 14, opacity: 0.4 }}>🎬</div>
+            <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--lb-text-bright)', marginBottom: 8 }}>
               Your watchlist is empty
             </div>
-            <div style={{ fontSize: '13px', marginBottom: '20px' }}>
-              Save movies you want to watch later
+            <div style={{ fontSize: 13, color: 'var(--lb-text-muted)', marginBottom: 20 }}>
+              Save films you want to watch later
             </div>
-            <Link
-              to="/browse"
-              style={{
-                padding: '9px 20px', background: '#185FA5', color: '#fff',
-                borderRadius: '6px', textDecoration: 'none', fontSize: '13px', fontWeight: 500,
-              }}
-            >
-              Browse movies
-            </Link>
+            <Link to="/browse" style={{
+              padding: '9px 22px', background: 'var(--lb-green)', color: 'var(--lb-bg)',
+              borderRadius: 4, textDecoration: 'none', fontSize: 12, fontWeight: 700,
+              letterSpacing: '0.06em', textTransform: 'uppercase',
+            }}>Browse films</Link>
           </div>
-        ) : (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
-            gap: '12px',
-          }}>
-            {items.map((m, i) => (
+        )}
+
+        {!loading && !error && items.length > 0 && (
+          <div className="movie-grid">
+            {items.map(m => (
               <div key={m.tmdb_id} style={{ position: 'relative' }}>
-                <MovieCard movie={m} index={i} />
-                <button
-                  onClick={() => removeFromWatchlist(m.tmdb_id)}
-                  title="Remove from watchlist"
+                <MovieCard movie={m} />
+                <button onClick={() => remove(m.tmdb_id)} title="Remove from watchlist"
                   style={{
-                    position: 'absolute', top: '6px', right: '6px',
-                    width: '24px', height: '24px', borderRadius: '50%',
-                    background: 'var(--color-background-primary)',
-                    border: '0.5px solid var(--color-border-secondary)',
-                    cursor: 'pointer', fontSize: '12px',
+                    position: 'absolute', top: 6, right: 6,
+                    width: 22, height: 22, borderRadius: '50%',
+                    background: 'rgba(0,0,0,0.7)', border: '1px solid rgba(255,255,255,0.2)',
+                    cursor: 'pointer', fontSize: 11,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: 'var(--color-text-secondary)',
-                    zIndex: 2,
-                  }}
-                >
-                  ✕
-                </button>
+                    color: '#fff', zIndex: 2,
+                  }}>✕</button>
               </div>
             ))}
           </div>

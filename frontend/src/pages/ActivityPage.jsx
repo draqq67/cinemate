@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import Navbar from '../components/ui/Navbar';
+import ErrorState from '../components/ui/ErrorState';
 import { getFeed } from '../api/activity';
 
 const POSTER  = 'https://image.tmdb.org/t/p/w185';
@@ -38,7 +39,11 @@ function EventRow({ event }) {
 
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: '13px', color: 'var(--lb-text-2)', lineHeight: 1.5 }}>
-          <span style={{ fontWeight: 700, color: 'var(--lb-text-bright)' }}>{event.username}</span>
+          <Link to={`/user/${event.user_id}`} style={{ fontWeight: 700, color: 'var(--lb-text-bright)', textDecoration: 'none' }}
+            onMouseEnter={e => e.currentTarget.style.color = 'var(--lb-green)'}
+            onMouseLeave={e => e.currentTarget.style.color = 'var(--lb-text-bright)'}>
+            {event.username}
+          </Link>
           {' '}{EVENT_LABEL[event.type]}{' '}
           <Link to={`/movie/${event.tmdb_id}`} style={{ color: 'var(--lb-green)', textDecoration: 'none', fontWeight: 600 }}>
             {event.title}
@@ -69,28 +74,37 @@ function EventRow({ event }) {
 }
 
 export default function ActivityPage() {
-  const [events, setEvents] = useState([]);
+  const [events, setEvents]   = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+
+  const retry = () => { setError(false); setLoading(true); setRetryCount(c => c + 1); };
 
   useEffect(() => {
     getFeed()
-      .then(r => setEvents(r.data.events))
-      .catch(() => setEvents([]))
-      .finally(() => setLoading(false));
-  }, []);
+      .then(r => { setEvents(r.data.events); setLoading(false); })
+      .catch(() => { setError(true); setLoading(false); });
+  }, [retryCount]);
 
   return (
     <>
       <Navbar />
-      <div style={{ maxWidth: 720, margin: '0 auto', padding: '40px 24px' }}>
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: '40px var(--page-px) 80px' }}>
         <div style={{ marginBottom: '32px' }}>
           <div style={LABEL}>Social</div>
           <h1 style={{ margin: '4px 0 0', fontSize: '28px', color: 'var(--lb-text-bright)' }}>Activity Feed</h1>
         </div>
 
         {loading && (
-          <div style={{ textAlign: 'center', padding: '60px', color: 'var(--lb-text)' }}>Loading…</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="skeleton" style={{ height: 88, borderRadius: 6 }} />
+            ))}
+          </div>
         )}
+
+        {!loading && error && <ErrorState title="Could not load activity feed" onRetry={retry} />}
 
         {!loading && events.length === 0 && (
           <div style={{

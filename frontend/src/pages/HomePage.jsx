@@ -302,12 +302,37 @@ export default function HomePage() {
 
         {/* Personalised recommendations */}
         {user && (recsLoading || recommendations.length > 0) && (
-          <Section
-            title="For you"
-            badge={recsStrategy && !recsLoading ? recsStrategy : undefined}
-            movies={recommendations}
-            loading={recsLoading}
-          />
+          <div style={{ marginBottom: '48px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <SectionHeader
+                title="For you"
+                badge={recsStrategy && !recsLoading ? recsStrategy : undefined}
+              />
+              <button
+                onClick={() => {
+                  setRecsLoading(true);
+                  getRecommendations()
+                    .then(({ data }) => { setRecs(data.movies || []); setRecsStrategy(data.strategy || ''); })
+                    .catch(() => {})
+                    .finally(() => setRecsLoading(false));
+                }}
+                disabled={recsLoading}
+                style={{
+                  padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                  background: 'var(--lb-bg-3)', border: '1px solid var(--lb-border-2)',
+                  color: 'var(--lb-text)', cursor: 'pointer', opacity: recsLoading ? 0.5 : 1,
+                }}
+              >↻ Refresh</button>
+            </div>
+            <div className="movie-grid">
+              {recsLoading
+                ? Array.from({ length: 6 }).map((_, i) => (
+                    <div key={i} className="skeleton" style={{ aspectRatio: '2/3' }} />
+                  ))
+                : recommendations.map(m => <MovieCard key={m.tmdb_id} movie={m} />)
+              }
+            </div>
+          </div>
         )}
 
         <Section title="Popular right now" movies={popular} loading={loading} />

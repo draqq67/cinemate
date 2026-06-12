@@ -43,3 +43,8 @@ ml/notebooks/data/
 ml/notebooks/models/
 ml/data/*.parquet
 ml/models/*.pkl
+docs/
+testing/
+testing/results/
+exemple_documentatii
+.claude

@@ -219,32 +219,42 @@ router.delete('/comments/:id', guard, async (req, res) => {
 // ── GET /api/admin/users ─────────────────────────────────────────────────────
 router.get('/users', guard, async (req, res) => {
   try {
-    const { page = 1, limit = 30, search = '' } = req.query;
+    const { page = 1, limit = 30, search = '', type = 'real' } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const params = [];
-    const where = search
-      ? (params.push(`%${search}%`), `WHERE u.username ILIKE $1 OR u.email ILIKE $1`)
-      : '';
+    const conditions = [];
+
+    if (search) {
+      params.push(`%${search}%`);
+      conditions.push(`(u.username ILIKE $${params.length} OR u.email ILIKE $${params.length})`);
+    }
+
+    // type filter: real = exclude ML-25M + sim; sim = only @sim.cinemate; ml25m = only @ml25m; all = everything
+    if (type === 'real') {
+      conditions.push(`u.email NOT LIKE '%@ml25m.cinemate' AND u.email NOT LIKE '%@sim.cinemate'`);
+    } else if (type === 'sim') {
+      conditions.push(`u.email LIKE '%@sim.cinemate'`);
+    } else if (type === 'ml25m') {
+      conditions.push(`u.email LIKE '%@ml25m.cinemate'`);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     params.push(parseInt(limit));
     params.push(offset);
 
     const { rows } = await pool.query(`
       SELECT u.id, u.username, u.email, u.role, u.created_at,
-             COUNT(DISTINCT r.id)  AS rating_count,
-             COUNT(DISTINCT c.id)  AS comment_count,
-             COUNT(DISTINCT wh.movie_id) AS watched_count
+             (SELECT COUNT(*) FROM ratings r     WHERE r.user_id = u.id) AS rating_count,
+             (SELECT COUNT(*) FROM comments c    WHERE c.user_id = u.id) AS comment_count,
+             (SELECT COUNT(*) FROM watch_history wh WHERE wh.user_id = u.id) AS watched_count
       FROM users u
-      LEFT JOIN ratings r     ON r.user_id = u.id
-      LEFT JOIN comments c    ON c.user_id = u.id
-      LEFT JOIN watch_history wh ON wh.user_id = u.id
       ${where}
-      GROUP BY u.id, u.username, u.email, u.role, u.created_at
       ORDER BY u.created_at DESC
       LIMIT $${params.length - 1} OFFSET $${params.length}
     `, params);
 
-    const countParams = search ? [params[0]] : [];
+    const countParams = params.slice(0, params.length - 2);
     const { rows: countRows } = await pool.query(
       `SELECT COUNT(*) FROM users u ${where}`, countParams
     );
@@ -498,6 +508,68 @@ router.get('/jellyfin/health', guard, async (_req, res) => {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// ── POST /api/admin/populate-credits — batch TMDB credits cache ───────────────
+let creditsJobRunning = false;
+router.post('/populate-credits', requireAuth, requireRole('admin'), async (req, res) => {
+  if (creditsJobRunning) return res.json({ status: 'already running' });
+
+  const { limit = 0, missingOnly = true } = req.body;
+  creditsJobRunning = true;
+  res.json({ status: 'started', limit, missingOnly });
+
+  // Run in background
+  (async () => {
+    const TMDB_BASE = 'https://api.themoviedb.org/3';
+    const tmdbFetch = async (id) => {
+      const r = await fetch(`${TMDB_BASE}/movie/${id}/credits`, {
+        headers: { Authorization: `Bearer ${process.env.TMDB_API_TOKEN}` },
+      });
+      return r.ok ? r.json() : null;
+    };
+
+    let query = 'SELECT tmdb_id FROM movies';
+    if (missingOnly) query += ' WHERE tmdb_id NOT IN (SELECT DISTINCT tmdb_id FROM movie_directors)';
+    query += ' ORDER BY popularity DESC';
+    if (limit) query += ` LIMIT ${parseInt(limit)}`;
+
+    const { rows } = await pool.query(query);
+    let done = 0;
+    for (let i = 0; i < rows.length; i += 5) {
+      const batch = rows.slice(i, i + 5);
+      await Promise.all(batch.map(async ({ tmdb_id }) => {
+        const data = await tmdbFetch(tmdb_id).catch(() => null);
+        if (!data) return;
+        const dirs  = (data.crew || []).filter(c => c.job === 'Director');
+        const actors = (data.cast || []).slice(0, 10);
+        await Promise.all([
+          ...dirs.map(d => pool.query(
+            `INSERT INTO movie_directors (tmdb_id, director_name, director_tmdb_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+            [tmdb_id, d.name, d.id || null]
+          ).catch(() => {})),
+          ...actors.map(a => pool.query(
+            `INSERT INTO movie_actors (tmdb_id, actor_name, actor_tmdb_id, profile_path, cast_order) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+            [tmdb_id, a.name, a.id || null, a.profile_path || null, a.order ?? null]
+          ).catch(() => {})),
+        ]);
+        done++;
+      }));
+      await new Promise(r => setTimeout(r, 260)); // ~19 req/5s — safe under TMDB limit
+    }
+    console.log(`Credits population done: ${done}/${rows.length} movies`);
+    creditsJobRunning = false;
+  })().catch(err => { console.error('Credits job error:', err); creditsJobRunning = false; });
+});
+
+// ── GET /api/admin/populate-credits — status ──────────────────────────────────
+router.get('/populate-credits', requireAuth, requireRole('admin'), async (_req, res) => {
+  const { rows } = await pool.query(
+    `SELECT (SELECT COUNT(*) FROM movie_directors) AS directors,
+            (SELECT COUNT(*) FROM movie_actors)    AS actors,
+            (SELECT COUNT(*) FROM movies)          AS total_movies`
+  );
+  res.json({ running: creditsJobRunning, ...rows[0] });
 });
 
 export default router;

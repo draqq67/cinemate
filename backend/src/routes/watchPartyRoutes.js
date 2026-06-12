@@ -2,6 +2,7 @@ import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import pool from '../db/pool.js';
 import { requireAuth } from '../middleware/auth.js';
+import { wsConnectionsGauge } from '../middleware/metrics.js';
 
 const router = Router();
 
@@ -148,6 +149,7 @@ export function setupWatchPartyWS(wss) {
     if (!rooms.has(roomCode)) rooms.set(roomCode, { members: new Map(), hostId: roomRow.host_id });
     const room = rooms.get(roomCode);
     room.members.set(ws, { userId: user.id, username });
+    wsConnectionsGauge.inc({ type: 'watch_party' });
 
     // Broadcast join
     broadcast(room, { type: 'join', username }, ws);
@@ -190,6 +192,7 @@ export function setupWatchPartyWS(wss) {
 
     ws.on('close', () => {
       room.members.delete(ws);
+      wsConnectionsGauge.dec({ type: 'watch_party' });
       broadcast(room, { type: 'leave', username });
       if (room.members.size === 0) rooms.delete(roomCode);
     });

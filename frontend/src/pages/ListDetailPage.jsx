@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import Navbar from '../components/ui/Navbar';
 import { useAuth } from '../hooks/useAuth';
+import ErrorState from '../components/ui/ErrorState';
 import { getList, toggleFollowList, getListFollowStatus, removeFromList } from '../api/lists';
 
 const POSTER = 'https://image.tmdb.org/t/p/w300';
@@ -15,19 +16,19 @@ export default function ListDetailPage() {
   const { user } = useAuth();
   const [list, setList] = useState(null);
   const [movies, setMovies] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [following, setFollowing] = useState(false);
+  const [loading, setLoading]       = useState(true);
+  const [fetchError, setFetchError] = useState(false);
+  const [following, setFollowing]   = useState(false);
   const [followLoading, setFollowLoading] = useState(false);
 
-  const load = async () => {
-    try {
-      const r = await getList(id);
-      setList(r.data.list);
-      setMovies(r.data.movies);
-    } finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => {
+    setLoading(true);
+    setFetchError(false);
+    getList(id)
+      .then(r => { setList(r.data.list); setMovies(r.data.movies); })
+      .catch(() => setFetchError(true))
+      .finally(() => setLoading(false));
+  }, [id]);
   useEffect(() => {
     if (user && list) {
       getListFollowStatus(id).then(r => setFollowing(r.data.following)).catch(() => {});
@@ -49,13 +50,24 @@ export default function ListDetailPage() {
     setMovies(ms => ms.filter(m => m.tmdb_id !== tmdbId));
   };
 
-  if (loading) return (
-    <><Navbar /><div style={{ textAlign: 'center', padding: '80px', color: 'var(--lb-text)' }}>Loading…</div></>
+  const Shell = ({ children }) => (
+    <div style={{ minHeight: '100vh', background: 'var(--lb-bg)' }}><Navbar />{children}</div>
   );
 
-  if (!list) return (
-    <><Navbar /><div style={{ textAlign: 'center', padding: '80px', color: 'var(--lb-danger)' }}>List not found.</div></>
+  if (loading) return (
+    <Shell>
+      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '40px var(--page-px)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div className="skeleton" style={{ height: 100, borderRadius: 6 }} />
+        <div className="movie-grid">
+          {Array.from({ length: 8 }).map((_, i) => <div key={i} className="skeleton" style={{ aspectRatio: '2/3' }} />)}
+        </div>
+      </div>
+    </Shell>
   );
+
+  if (fetchError) return <Shell><ErrorState title="Could not load this list" onRetry={() => window.location.reload()} /></Shell>;
+
+  if (!list) return <Shell><ErrorState title="List not found" /></Shell>;
 
   const isOwner = user?.id === list.user_id;
 

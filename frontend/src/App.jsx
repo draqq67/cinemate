@@ -18,6 +18,9 @@ import ActivityPage from './pages/ActivityPage';
 import WatchPartyPage from './pages/WatchPartyPage';
 import ImportPage from './pages/ImportPage';
 import DiscoverPage from './pages/DiscoverPage';
+import MessagesPage from './pages/MessagesPage';
+import UserPage from './pages/UserPage';
+import UsersPage from './pages/UsersPage';
 import './index.css';
 
 function App() {
@@ -41,6 +44,9 @@ function App() {
           <Route path="/admin"         element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
           <Route path="/import"        element={<ProtectedRoute><ImportPage /></ProtectedRoute>} />
           <Route path="/discover"      element={<DiscoverPage />} />
+          <Route path="/messages"     element={<ProtectedRoute><MessagesPage /></ProtectedRoute>} />
+          <Route path="/user/:userId" element={<UserPage />} />
+          <Route path="/users"        element={<UsersPage />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>

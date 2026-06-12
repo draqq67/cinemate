@@ -57,9 +57,12 @@ export default function ListsPage() {
   const [total, setTotal] = useState(0);
   const [tab, setTab] = useState('browse');
   const [showCreate, setShowCreate] = useState(false);
-  const [newTitle, setNewTitle] = useState('');
-  const [newDesc, setNewDesc] = useState('');
-  const [creating, setCreating] = useState(false);
+  const [newTitle, setNewTitle]   = useState('');
+  const [newDesc, setNewDesc]     = useState('');
+  const [newPublic, setNewPublic] = useState(true);
+  const [creating, setCreating]   = useState(false);
+  const [loading, setLoading]         = useState(true);
+  const [loadingMine, setLoadingMine] = useState(true);
 
   const fetchLists = useCallback(async () => {
     const params = { search };
@@ -74,16 +77,16 @@ export default function ListsPage() {
     setMyLists(r.data.lists);
   }, [user]);
 
-  useEffect(() => { fetchLists(); }, [fetchLists]);
-  useEffect(() => { if (tab === 'mine') fetchMine(); }, [tab, fetchMine]);
+  useEffect(() => { setLoading(true); fetchLists().finally(() => setLoading(false)); }, [fetchLists]);
+  useEffect(() => { if (tab === 'mine') { setLoadingMine(true); fetchMine().finally(() => setLoadingMine(false)); } }, [tab, fetchMine]);
 
   const handleCreate = async (e) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
     setCreating(true);
     try {
-      await createList({ title: newTitle.trim(), description: newDesc.trim() });
-      setNewTitle(''); setNewDesc(''); setShowCreate(false);
+      await createList({ title: newTitle.trim(), description: newDesc.trim(), is_public: newPublic });
+      setNewTitle(''); setNewDesc(''); setNewPublic(true); setShowCreate(false);
       fetchMine();
     } finally { setCreating(false); }
   };
@@ -133,10 +136,28 @@ export default function ListsPage() {
                   <input value={newTitle} onChange={e => setNewTitle(e.target.value)}
                     placeholder="e.g. Best 90s Sci-Fi" style={{ width: '100%', boxSizing: 'border-box' }} autoFocus />
                 </div>
-                <div style={{ marginBottom: '20px' }}>
+                <div style={{ marginBottom: '16px' }}>
                   <div style={{ ...LABEL, marginBottom: '6px' }}>Description (optional)</div>
                   <textarea value={newDesc} onChange={e => setNewDesc(e.target.value)}
                     rows={3} placeholder="What's this list about?" style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical' }} />
+                </div>
+                {/* Public / Private toggle */}
+                <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--lb-text-muted)' }}>Visibility</div>
+                  <div style={{ display: 'flex', background: 'var(--lb-bg-3)', border: '1px solid var(--lb-border-2)', borderRadius: 4, overflow: 'hidden' }}>
+                    {[['public', '🌍 Public'], ['private', '🔒 Private']].map(([val, label]) => (
+                      <button key={val} type="button" onClick={() => setNewPublic(val === 'public')}
+                        style={{
+                          padding: '5px 14px', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                          border: 'none', letterSpacing: '0.04em',
+                          background: (newPublic === (val === 'public')) ? 'var(--lb-green)' : 'none',
+                          color: (newPublic === (val === 'public')) ? 'var(--lb-bg)' : 'var(--lb-text)',
+                        }}>{label}</button>
+                    ))}
+                  </div>
+                  <span style={{ fontSize: 11, color: 'var(--lb-text-muted)' }}>
+                    {newPublic ? 'Visible to everyone' : 'Only visible to you'}
+                  </span>
                 </div>
                 <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
                   <button type="button" onClick={() => setShowCreate(false)} style={{
@@ -168,23 +189,32 @@ export default function ListsPage() {
               placeholder="Search lists…"
               style={{ width: '100%', maxWidth: '360px', marginBottom: '24px', boxSizing: 'border-box' }}
             />
-            {lists.length === 0
-              ? <div style={{ color: 'var(--lb-text-muted)', textAlign: 'center', padding: '60px' }}>No lists found.</div>
-              : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
-                  {lists.map(l => <ListCard key={l.id} list={l} />)}
+            {loading
+              ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <div key={i} className="skeleton" style={{ height: 170, borderRadius: 6 }} />
+                  ))}
                 </div>
+              : lists.length === 0
+                ? <div style={{ color: 'var(--lb-text-muted)', textAlign: 'center', padding: '60px' }}>No lists found.</div>
+                : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+                    {lists.map(l => <ListCard key={l.id} list={l} />)}
+                  </div>
             }
           </>
         )}
 
         {tab === 'mine' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {myLists.length === 0 && (
+            {loadingMine && Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="skeleton" style={{ height: 64, borderRadius: 6 }} />
+            ))}
+            {!loadingMine && myLists.length === 0 && (
               <div style={{ color: 'var(--lb-text-muted)', textAlign: 'center', padding: '60px' }}>
                 You haven't created any lists yet.
               </div>
             )}
-            {myLists.map(l => (
+            {!loadingMine && myLists.map(l => (
               <div key={l.id} style={{
                 display: 'flex', alignItems: 'center', gap: '16px',
                 background: 'var(--lb-bg-2)', border: '1px solid var(--lb-border)',

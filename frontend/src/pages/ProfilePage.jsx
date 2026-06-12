@@ -4,6 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import client from '../api/client';
 import Navbar from '../components/ui/Navbar';
 import MovieCard from '../components/ui/MovieCard';
+import ErrorState from '../components/ui/ErrorState';
 
 const LABEL = {
   fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em',
@@ -30,6 +31,8 @@ export default function ProfilePage() {
   const [wishlist, setWishlist]     = useState([]);
   const [comments, setComments]     = useState([]);
   const [stats, setStats]           = useState({ watched: 0, rated: 0, wishlist: 0, avgRating: 0 });
+  const [loading, setLoading]       = useState(true);
+  const [fetchError, setFetchError] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -45,10 +48,29 @@ export default function ProfilePage() {
       setWishlist(w.data.items || []);
       setComments(c.data.items || []);
       setStats(s.data);
-    }).catch(console.error);
+      setLoading(false);
+    }).catch(() => { setFetchError(true); setLoading(false); });
   }, [user]);
 
   if (!user) return null;
+
+  if (loading) return (
+    <div style={{ minHeight: '100vh', background: 'var(--lb-bg)' }}>
+      <Navbar />
+      <div style={{ maxWidth: 960, margin: '0 auto', padding: '40px var(--page-px)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div className="skeleton" style={{ height: 120, borderRadius: 8 }} />
+        <div className="skeleton" style={{ height: 80, borderRadius: 6 }} />
+        <div className="skeleton" style={{ height: 200, borderRadius: 6 }} />
+      </div>
+    </div>
+  );
+
+  if (fetchError) return (
+    <div style={{ minHeight: '100vh', background: 'var(--lb-bg)' }}>
+      <Navbar />
+      <ErrorState title="Could not load profile" onRetry={() => window.location.reload()} />
+    </div>
+  );
 
   const joined = new Date(user.created_at).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 

@@ -46,10 +46,12 @@ export default function ImportPage() {
   const [source, setSource]   = useState('letterboxd');
   const [dragging, setDragging] = useState(false);
   const [file, setFile]       = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult]   = useState(null);
-  const [error, setError]     = useState('');
-  const [filter, setFilter]   = useState('all');
+  const [loading, setLoading]     = useState(false);
+  const [uploadPct, setUploadPct] = useState(0);
+  const [phase, setPhase]         = useState(''); // 'uploading' | 'processing' | ''
+  const [result, setResult]       = useState(null);
+  const [error, setError]         = useState('');
+  const [filter, setFilter]       = useState('all');
   const inputRef = useRef();
 
   const info = SOURCE_INFO[source];
@@ -71,15 +73,23 @@ export default function ImportPage() {
   const handleImport = async () => {
     if (!file) return;
     setLoading(true);
+    setUploadPct(0);
+    setPhase('uploading');
     setError('');
     setResult(null);
     try {
-      const data = await importCSV(file);
+      const data = await importCSV(file, (e) => {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        setUploadPct(pct);
+        if (pct >= 100) setPhase('processing');
+      });
       setResult(data);
     } catch (e) {
       setError(e.response?.data?.error || 'Import failed. Check the file format and try again.');
     } finally {
       setLoading(false);
+      setPhase('');
+      setUploadPct(0);
     }
   };
 
@@ -204,13 +214,30 @@ export default function ImportPage() {
                 transition: 'all 0.15s', width: '100%',
               }}
             >
-              {loading ? 'Importing — this may take a minute…' : 'Import'}
+              {loading
+                ? phase === 'uploading' ? `Uploading… ${uploadPct}%`
+                : phase === 'processing' ? 'Matching movies — this may take a minute…'
+                : 'Importing…'
+                : 'Import'}
             </button>
 
             {loading && (
-              <div style={{ fontSize: 12, color: 'var(--lb-text-muted)', textAlign: 'center', lineHeight: 1.6 }}>
-                Matching movies against the catalog.<br />
-                Unmatched titles are looked up via TMDB API.
+              <div>
+                {/* Progress bar */}
+                <div style={{ height: 4, background: 'var(--lb-bg-3)', borderRadius: 2, overflow: 'hidden', marginBottom: 8 }}>
+                  <div style={{
+                    height: '100%', borderRadius: 2,
+                    background: phase === 'processing' ? 'var(--lb-orange)' : 'var(--lb-green)',
+                    width: phase === 'processing' ? '100%' : `${uploadPct}%`,
+                    transition: 'width 0.3s ease',
+                    animation: phase === 'processing' ? 'pulse 1.5s ease-in-out infinite' : 'none',
+                  }} />
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--lb-text-muted)', textAlign: 'center', lineHeight: 1.6 }}>
+                  {phase === 'uploading'
+                    ? 'Uploading file…'
+                    : 'Matching against catalog — unmatched titles looked up via TMDB API.'}
+                </div>
               </div>
             )}
           </div>

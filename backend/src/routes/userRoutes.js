@@ -163,4 +163,49 @@ router.get('/me/ratings', async (req, res) => {
   }
 });
 
+// ── GET /api/users/search?q= — search users by username (public) ─────────────
+router.get('/search', async (req, res) => {
+  const { q = '', limit = 20 } = req.query;
+  if (!q.trim()) return res.json({ users: [] });
+  try {
+    const { rows } = await pool.query(`
+      SELECT u.id, u.username, u.avatar_url,
+             (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS follower_count,
+             (SELECT COUNT(*) FROM watch_history  WHERE user_id    = u.id) AS watched_count
+      FROM users u
+      WHERE u.username ILIKE $1
+        AND u.email NOT LIKE '%@ml25m.cinemate'
+      ORDER BY follower_count DESC, u.username
+      LIMIT $2
+    `, [`%${q.trim()}%`, parseInt(limit)]);
+    res.json({ users: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── GET /api/users/me/preferences ────────────────────────────────────────────
+router.get('/me/preferences', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT preferences FROM users WHERE id=$1', [req.user.id]);
+    res.json({ preferences: rows[0]?.preferences || null });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── PUT /api/users/me/preferences ────────────────────────────────────────────
+router.put('/me/preferences', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'UPDATE users SET preferences=$1 WHERE id=$2 RETURNING preferences',
+      [JSON.stringify(req.body), req.user.id]
+    );
+    res.json({ preferences: rows[0].preferences });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 export default router;

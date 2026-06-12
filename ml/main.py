@@ -10,6 +10,7 @@ import pandas as pd
 import psycopg2
 import joblib
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 from scipy.sparse import csr_matrix
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -53,6 +54,10 @@ movies_df:       Optional[pd.DataFrame] = None
 ratings_df:      Optional[pd.DataFrame] = None
 watch_df:        Optional[pd.DataFrame] = None
 
+# Pre-built O(1) lookup dicts (built after movies_df loads)
+tmdb_runtime:    dict                   = {}  # tmdb_id → runtime (int, may be None)
+tmdb_genres_set: dict                   = {}  # tmdb_id → set of lowercase genre names
+
 # TF-IDF content (fallback when genome unavailable)
 tfidf_matrix                            = None
 tmdb_id_to_idx:  dict                   = {}
@@ -83,12 +88,12 @@ def _load_from_db() -> None:
     try:
         movies_df = pd.read_sql("""
             SELECT
-                m.tmdb_id, m.title, m.popularity, m.vote_average,
+                m.tmdb_id, m.title, m.popularity, m.vote_average, m.runtime,
                 array_agg(DISTINCT g.name) FILTER (WHERE g.name IS NOT NULL) AS genres
             FROM movies m
             LEFT JOIN movie_genres mg ON mg.tmdb_id = m.tmdb_id
             LEFT JOIN genres        g ON g.id        = mg.genre_id
-            GROUP BY m.tmdb_id, m.title, m.popularity, m.vote_average
+            GROUP BY m.tmdb_id, m.title, m.popularity, m.vote_average, m.runtime
         """, conn)
         movies_df["tmdb_id"] = movies_df["tmdb_id"].astype(int)
         log.info("Loaded %d movies", len(movies_df))
@@ -114,18 +119,27 @@ def _load_from_db() -> None:
 
 # ── Content-based models ───────────────────────────────────────────────────────
 def _build_tfidf() -> None:
-    global tfidf_matrix, tmdb_id_to_idx
+    global tfidf_matrix, tmdb_id_to_idx, tmdb_runtime, tmdb_genres_set
 
     def soup(row):
         genres = " ".join(row["genres"] or [])
-        # Repeat to boost weight; genome tags are the primary signal when available
         return f"{genres} {genres} {genres}"
 
     movies_df["soup"] = movies_df.apply(soup, axis=1)
     tmdb_id_to_idx    = {int(t): i for i, t in enumerate(movies_df["tmdb_id"])}
     tfidf             = TfidfVectorizer(stop_words="english", max_features=10_000)
     tfidf_matrix      = tfidf.fit_transform(movies_df["soup"])
-    log.info("TF-IDF matrix: %s", tfidf_matrix.shape)
+
+    # Pre-build O(1) lookup dicts for runtime and genres
+    # pd.notna() handles both None and NaN
+    tmdb_runtime    = {int(r["tmdb_id"]): (int(r["runtime"]) if pd.notna(r["runtime"]) else None)
+                       for _, r in movies_df.iterrows()}
+    tmdb_genres_set = {int(r["tmdb_id"]): set(g.lower() for g in (r["genres"] or []))
+                       for _, r in movies_df.iterrows()}
+
+    has_runtime = sum(1 for v in tmdb_runtime.values() if v is not None)
+    log.info("TF-IDF matrix: %s  |  runtime known for %d/%d movies",
+             tfidf_matrix.shape, has_runtime, len(tmdb_runtime))
 
 
 def _build_genome() -> None:
@@ -419,6 +433,9 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Exposes /metrics for Prometheus: request counts, latency histograms, in-progress requests
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
 
 @app.get("/health")
 def health():
@@ -475,16 +492,21 @@ def similar(tmdb_id: int, limit: int = 6):
 
 @app.post("/refresh")
 def refresh():
-    # Delete cached models to force full retraining on next load
+    """Reload data from DB and immediately retrain SVD + ALS models."""
     for fname in ("svd.pkl", "als.pkl"):
         p = MODELS_DIR / fname
         if p.exists():
             p.unlink()
     load_data()
+    t0 = time.time()
+    _load_or_train_svd()
+    _load_or_train_als()
+    elapsed = round(time.time() - t0, 1)
     return {
-        "status":  "refreshed",
-        "movies":  len(movies_df)  if movies_df  is not None else 0,
-        "ratings": len(ratings_df) if ratings_df is not None else 0,
+        "status":   "refreshed",
+        "movies":   len(movies_df)  if movies_df  is not None else 0,
+        "ratings":  len(ratings_df) if ratings_df is not None else 0,
+        "elapsed_s": elapsed,
     }
 
 
@@ -519,6 +541,65 @@ def evaluate(test_frac: float = 0.2):
         "rmse":   round(float(np.sqrt(np.mean((arr_t - arr_p) ** 2))), 4),
         "mae":    round(float(np.mean(np.abs(arr_t - arr_p))), 4),
         "n_test": len(y_true),
+    }
+
+
+@app.get("/user-genome/{user_id}")
+def user_genome(user_id: str, n_tags: int = 25, min_score: int = 7):
+    """Return top genome tags characterising a user's liked movies (queries DB live)."""
+    if genome_matrix is None or not tag_name_to_col:
+        return {"tags": [], "n_liked": 0}
+
+    try:
+        conn = psycopg2.connect(**DB)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT m.tmdb_id FROM ratings r
+                    JOIN movies m ON m.id = r.movie_id
+                    WHERE r.user_id = %s AND r.score >= %s
+                """, (user_id, min_score))
+                liked = [row[0] for row in cur.fetchall()]
+        finally:
+            conn.close()
+    except Exception as e:
+        log.warning("user-genome DB query failed: %s", e)
+        return {"tags": [], "n_liked": 0}
+
+    if not liked:
+        return {"tags": [], "n_liked": 0}
+
+    indices = [genome_idx[tid] for tid in liked if tid in genome_idx]
+    if not indices:
+        return {"tags": [], "n_liked": len(liked)}
+
+    user_vec  = genome_matrix[indices].mean(axis=0)      # (1128,)
+    # Also compute platform average for all movies with genome data
+    platform_vec = genome_matrix.mean(axis=0)
+
+    # Relative score: how much higher than platform average for each tag
+    rel = user_vec - platform_vec
+
+    # Build tag name reverse lookup
+    col_to_name = {v: k for k, v in tag_name_to_col.items()}
+
+    top_abs = user_vec.argsort()[::-1][:n_tags]
+    top_rel = rel.argsort()[::-1][:n_tags]
+
+    tags_abs = [
+        {"tag": col_to_name[i], "score": round(float(user_vec[i]), 3), "relative": round(float(rel[i]), 3)}
+        for i in top_abs if i in col_to_name
+    ]
+    tags_distinctive = [
+        {"tag": col_to_name[i], "score": round(float(user_vec[i]), 3), "relative": round(float(rel[i]), 3)}
+        for i in top_rel if i in col_to_name and rel[i] > 0
+    ][:15]
+
+    return {
+        "tags": tags_abs,
+        "distinctive_tags": tags_distinctive,  # tags where you exceed platform avg most
+        "n_liked": len(liked),
+        "n_with_genome": len(indices),
     }
 
 
@@ -584,6 +665,135 @@ def mood(moods: str, genre: str = "", limit: int = 12):
             break
 
     return {"movies": results, "moods": selected}
+
+
+@app.get("/mood-context")
+def mood_context(
+    moods: str = "",
+    duration: str = "any",    # short <45 | medium 45-120 | long >120 | any
+    context: str = "solo",    # solo | friends | date | family
+    exclude_moods: str = "",
+    genre: str = "",          # comma-separated genre names (match ANY)
+    user_id: str = "",
+    limit: int = 15,
+):
+    if genome_matrix is None or not tag_name_to_col:
+        return {"movies": [], "strategy": "unavailable", "filters_applied": {}}
+
+    selected = [m.strip() for m in moods.split(",") if m.strip() in MOOD_PROFILES]
+    excluded = [m.strip() for m in exclude_moods.split(",") if m.strip() in MOOD_PROFILES]
+
+    # Context boosts additional moods on top of user selection
+    CONTEXT_BOOSTS = {
+        "friends": ["feel-good", "funny", "epic"],
+        "date":    ["romantic", "atmospheric"],
+        "family":  ["feel-good", "funny"],
+        "solo":    [],
+    }
+    CONTEXT_PENALISE = {
+        "family": ["dark", "scary"],
+        "date":   [],
+        "friends":[],
+        "solo":   [],
+    }
+    boosted  = CONTEXT_BOOSTS.get(context, [])
+    penalise = CONTEXT_PENALISE.get(context, []) + excluded
+
+    # Build query vector
+    query_vec = np.zeros(genome_matrix.shape[1], dtype=np.float32)
+    for mood_id in set(selected + boosted):
+        for tag_name in MOOD_PROFILES.get(mood_id, []):
+            col = tag_name_to_col.get(tag_name.lower())
+            if col is not None:
+                query_vec[col] += 1.0
+
+    if query_vec.sum() == 0 and not user_id:
+        # No moods — return popular
+        pop = movies_df.nlargest(limit, "popularity")["tmdb_id"].astype(int).tolist()
+        return {"movies": pop, "strategy": "popular", "filters_applied": {}}
+
+    query_vec /= max(query_vec.sum(), 1)
+    sims = cosine_similarity(query_vec.reshape(1, -1), genome_matrix).flatten()
+
+    # Penalise excluded moods
+    if penalise:
+        pen_vec = np.zeros(genome_matrix.shape[1], dtype=np.float32)
+        for mood_id in penalise:
+            for tag_name in MOOD_PROFILES.get(mood_id, []):
+                col = tag_name_to_col.get(tag_name.lower())
+                if col is not None:
+                    pen_vec[col] += 1.0
+        if pen_vec.sum() > 0:
+            pen_vec /= pen_vec.sum()
+            pen_sims = cosine_similarity(pen_vec.reshape(1, -1), genome_matrix).flatten()
+            sims = np.clip(sims - pen_sims * 0.5, 0, 1)
+
+    # Optional CF blend for logged-in users
+    if user_id and svd_algo is not None:
+        cf = _cf_scores(user_id, genome_tmdb_ids)
+        for i, tid in enumerate(genome_tmdb_ids):
+            cf_s = cf.get(tid, 0)
+            sims[i] = 0.6 * sims[i] + 0.4 * cf_s
+
+    # Duration filter — O(1) lookup via pre-built dict
+    duration_map = {"short": (0, 45), "medium": (45, 120), "long": (120, 9999), "any": None}
+    dur_range = duration_map.get(duration)
+
+    # Genre filter — support multiple genres (ANY match), O(1) lookup
+    genre_names = set(g.strip().lower() for g in genre.split(",") if g.strip()) if genre else set()
+
+    results = []
+    order = sims.argsort()[::-1]
+    for i in order:
+        if sims[i] <= 0:
+            break
+        tid = genome_tmdb_ids[i]
+
+        # Duration: only exclude if runtime is known AND out of range
+        if dur_range is not None:
+            rt = tmdb_runtime.get(tid)
+            if rt is not None and not (dur_range[0] <= rt <= dur_range[1]):
+                continue
+
+        # Genre: movie must have AT LEAST ONE of the selected genres
+        if genre_names:
+            movie_genres = tmdb_genres_set.get(tid, set())
+            if not (genre_names & movie_genres):
+                continue
+
+        results.append(tid)
+        if len(results) >= limit:
+            break
+
+    # If too few results with strict filter, relax duration (include unknowns only)
+    if dur_range is not None and len(results) < limit // 2:
+        log.info("Duration filter too strict (%d results), relaxing to include unknown-runtime movies", len(results))
+        for i in order:
+            if sims[i] <= 0:
+                break
+            tid = genome_tmdb_ids[i]
+            if tid in results:
+                continue
+            rt = tmdb_runtime.get(tid)
+            if rt is not None and not (dur_range[0] <= rt <= dur_range[1]):
+                continue
+            # rt is None — include these (unknown runtime)
+            if genre_names:
+                movie_genres = tmdb_genres_set.get(tid, set())
+                if not (genre_names & movie_genres):
+                    continue
+            results.append(tid)
+            if len(results) >= limit:
+                break
+
+    strategy = f"mood-context ({context}, {duration})"
+    if selected: strategy += f" [{','.join(selected)}]"
+
+    return {
+        "movies": results,
+        "strategy": strategy,
+        "filters_applied": {"duration": duration, "context": context, "excluded": excluded},
+    }
 
 
 if __name__ == "__main__":

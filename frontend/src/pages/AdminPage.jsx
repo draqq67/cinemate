@@ -681,17 +681,18 @@ function UsersTab({ currentUserId }) {
   const [total, setTotal]     = useState(0);
   const [page, setPage]       = useState(1);
   const [search, setSearch]   = useState('');
+  const [userType, setUserType] = useState('real'); // real | sim | ml25m | all
   const [loading, setLoading] = useState(false);
   const [confirm, setConfirm] = useState(null);
   const [busy, setBusy]       = useState({});
 
   const load = useCallback(() => {
     setLoading(true);
-    getAdminUsers({ page, limit: 30, search })
+    getAdminUsers({ page, limit: 30, search, type: userType })
       .then(({ data }) => { setUsers(data.users); setTotal(data.total); })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [page, search]);
+  }, [page, search, userType]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -724,6 +725,18 @@ function UsersTab({ currentUserId }) {
   return (
     <div>
       {confirm && <Confirm message={`Delete user "${confirm.username}"? This will remove all their ratings, comments and history.`} onConfirm={() => doDelete(confirm)} onCancel={() => setConfirm(null)} />}
+
+      <div style={{ marginBottom: '16px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+        {[['real','Real users'],['sim','Simulated'],['ml25m','ML-25M'],['all','All']].map(([v, label]) => (
+          <button key={v} onClick={() => { setUserType(v); setPage(1); }} style={{
+            padding: '4px 12px', borderRadius: '3px', fontSize: '11px', fontWeight: 700,
+            letterSpacing: '0.05em', textTransform: 'uppercase', cursor: 'pointer', border: 'none',
+            background: userType === v ? 'var(--lb-green)' : 'var(--lb-bg-3)',
+            color: userType === v ? 'var(--lb-bg)' : 'var(--lb-text)',
+          }}>{label}</button>
+        ))}
+        <span style={{ fontSize: '11px', color: 'var(--lb-text-muted)', marginLeft: 4 }}>{total.toLocaleString()} users</span>
+      </div>
 
       <div style={{ marginBottom: '20px', maxWidth: '320px' }}>
         <div style={{ ...LABEL, marginBottom: '5px' }}>Search users</div>
@@ -889,12 +902,15 @@ function SubtitlesTab() {
 
 // ─── ML Service Tab ─────────────────────────────────────────────────────────────
 function MLServiceTab() {
-  const [health, setHealth]       = useState(null);
-  const [loading, setLoading]     = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [evalResult, setEvalResult] = useState(null);
-  const [evaluating, setEvaluating] = useState(false);
-  const [msg, setMsg]             = useState('');
+  const [health, setHealth]           = useState(null);
+  const [loading, setLoading]         = useState(true);
+  const [refreshing, setRefreshing]   = useState(false);
+  const [retrainStep, setRetrainStep] = useState('');
+  const [retrainElapsed, setRetrainElapsed] = useState(0);
+  const [evalResult, setEvalResult]   = useState(null);
+  const [evaluating, setEvaluating]   = useState(false);
+  const [evalElapsed, setEvalElapsed] = useState(0);
+  const [msg, setMsg]                 = useState('');
 
   const loadHealth = useCallback(async () => {
     setLoading(true);
@@ -907,15 +923,37 @@ function MLServiceTab() {
 
   useEffect(() => { loadHealth(); }, [loadHealth]);
 
+  // elapsed timer while an operation is running
+  useEffect(() => {
+    if (!refreshing) return;
+    setRetrainElapsed(0);
+    const id = setInterval(() => setRetrainElapsed(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [refreshing]);
+
+  useEffect(() => {
+    if (!evaluating) return;
+    setEvalElapsed(0);
+    const id = setInterval(() => setEvalElapsed(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [evaluating]);
+
   const handleRefresh = async () => {
     setRefreshing(true);
     setMsg('');
+    setRetrainStep('Loading data from database…');
     try {
+      // Sequence: data loads first (~2s), then models train (~30-90s)
+      setTimeout(() => setRetrainStep('Training FunkSVD collaborative filter…'), 3000);
+      setTimeout(() => setRetrainStep('Training ALS implicit feedback model…'), 35000);
       const r = await fetch('/api/recommendations/refresh', { method: 'POST', credentials: 'include' });
       const d = await r.json();
-      setMsg(d.error ? `Error: ${d.error}` : `Retrained — ${d.movies} movies, ${d.ratings} ratings`);
+      setMsg(d.error
+        ? `Error: ${d.error}`
+        : `Done in ${d.elapsed_s ?? '?'}s — ${d.movies?.toLocaleString()} movies, ${d.ratings?.toLocaleString()} ratings`);
+      setRetrainStep('');
       loadHealth();
-    } catch { setMsg('Could not reach ML service.'); }
+    } catch { setMsg('Could not reach ML service.'); setRetrainStep(''); }
     setRefreshing(false);
   };
 
@@ -1007,18 +1045,26 @@ function MLServiceTab() {
             <div style={{ flex: 1, minWidth: 200 }}>
               <div style={{ fontSize: '13px', fontWeight: 600, color: '#fff', marginBottom: '4px' }}>Retrain models</div>
               <div style={{ fontSize: '12px', color: 'var(--lb-text-muted)', lineHeight: 1.5 }}>
-                Clears cached SVD and ALS models and retrains from current DB ratings and watch history.
-                Takes 10–60 s depending on dataset size.
+                Reloads data from DB and retrains FunkSVD + ALS models immediately.
+                Takes 30–120 s depending on dataset size.
               </div>
             </div>
             <button onClick={handleRefresh} disabled={refreshing || !online} style={BTN('green')}>
-              {refreshing ? 'Retraining…' : 'Retrain now'}
+              {refreshing ? `Retraining… ${retrainElapsed}s` : 'Retrain now'}
             </button>
           </div>
 
-          {msg && (
-            <div style={{ fontSize: '12px', padding: '8px 12px', borderRadius: '4px', background: 'var(--lb-bg-3)', color: 'var(--lb-text-2)' }}>
-              {msg}
+          {refreshing && retrainStep && (
+            <div style={{ fontSize: '12px', padding: '10px 14px', borderRadius: '4px', background: 'var(--lb-bg-3)', border: '1px solid var(--lb-border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'var(--lb-green)', animation: 'pulse 1s ease-in-out infinite' }} />
+              <span style={{ color: 'var(--lb-text-2)' }}>{retrainStep}</span>
+              <span style={{ color: 'var(--lb-text-muted)', marginLeft: 'auto' }}>{retrainElapsed}s elapsed</span>
+            </div>
+          )}
+
+          {msg && !refreshing && (
+            <div style={{ fontSize: '12px', padding: '8px 12px', borderRadius: '4px', background: 'var(--lb-bg-3)', color: 'var(--lb-text-2)', border: '1px solid var(--lb-border)' }}>
+              ✓ {msg}
             </div>
           )}
 
@@ -1030,7 +1076,7 @@ function MLServiceTab() {
               </div>
             </div>
             <button onClick={handleEvaluate} disabled={evaluating || !online} style={BTN()}>
-              {evaluating ? 'Evaluating…' : 'Evaluate'}
+              {evaluating ? `Evaluating… ${evalElapsed}s` : 'Evaluate'}
             </button>
           </div>
 
@@ -1177,12 +1223,138 @@ function JellyfinHealthTab() {
 }
 
 // ─── Main AdminPage ─────────────────────────────────────────────────────────────
+// ─── Insights Tab ────────────────────────────────────────────────────────────
+function InsightsTab() {
+  const [topMovies, setTopMovies]   = useState(null);
+  const [abandon, setAbandon]       = useState(null);
+  const [active, setActive]         = useState(null);
+  const [ctr, setCtr]               = useState(null);
+  const [genres, setGenres]         = useState(null);
+  const POSTER = 'https://image.tmdb.org/t/p/w92';
+
+  useEffect(() => {
+    fetch('/api/admin/insights/top-movies',       { credentials: 'include' }).then(r => r.json()).then(d => setTopMovies(d.movies || [])).catch(() => setTopMovies([]));
+    fetch('/api/admin/insights/abandonment',      { credentials: 'include' }).then(r => r.json()).then(d => setAbandon(d.movies || [])).catch(() => setAbandon([]));
+    fetch('/api/admin/insights/active-users',     { credentials: 'include' }).then(r => r.json()).then(d => setActive(d)).catch(() => setActive(null));
+    fetch('/api/admin/insights/recommendation-ctr', { credentials: 'include' }).then(r => r.json()).then(d => setCtr(d.by_strategy || [])).catch(() => setCtr([]));
+    fetch('/api/admin/insights/genre-breakdown',  { credentials: 'include' }).then(r => r.json()).then(d => setGenres(d.genres || [])).catch(() => setGenres([]));
+  }, []);
+
+  const maxHours = genres?.length ? Math.max(...genres.map(g => parseFloat(g.total_hours)), 1) : 1;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Active users */}
+      {active && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
+          {[['DAU', active.dau, '24h'], ['WAU', active.wau, '7 days'], ['MAU', active.mau, '30 days']].map(([label, val, sub]) => (
+            <div key={label} style={{ ...CARD, textAlign: 'center', padding: 16 }}>
+              <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--lb-green)' }}>{val}</div>
+              <div style={{ ...LABEL, marginTop: 4 }}>{label}</div>
+              <div style={{ fontSize: 10, color: 'var(--lb-text-muted)', marginTop: 2 }}>active in {sub}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Genre watch hours */}
+      {genres && (
+        <div style={CARD}>
+          <div style={{ ...LABEL, marginBottom: 14 }}>Watch hours by genre</div>
+          {genres.slice(0, 12).map(g => (
+            <div key={g.name} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <div style={{ width: 90, fontSize: 11, color: 'var(--lb-text-2)', fontWeight: 600, flexShrink: 0 }}>{g.name}</div>
+              <div style={{ flex: 1, background: 'var(--lb-bg-3)', borderRadius: 2, height: 5, overflow: 'hidden' }}>
+                <div style={{ height: '100%', background: 'var(--lb-green)', width: `${Math.round((g.total_hours / maxHours) * 100)}%` }} />
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--lb-text-muted)', width: 50, textAlign: 'right' }}>{g.total_hours}h</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Recommendation CTR */}
+      {ctr && ctr.length > 0 && (
+        <div style={CARD}>
+          <div style={{ ...LABEL, marginBottom: 14 }}>Recommendation acceptance by strategy</div>
+          {ctr.map(s => (
+            <div key={s.strategy} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <div style={{ width: 140, fontSize: 11, color: 'var(--lb-text-muted)', flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.strategy}</div>
+              <div style={{ flex: 1, background: 'var(--lb-bg-3)', borderRadius: 2, height: 5, overflow: 'hidden' }}>
+                <div style={{ height: '100%', background: 'var(--lb-orange)', width: `${Math.min(s.acceptance_rate, 100)}%` }} />
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--lb-text-muted)', width: 36, textAlign: 'right' }}>{s.acceptance_rate}%</div>
+              <div style={{ fontSize: 10, color: 'var(--lb-text-muted)', width: 50, textAlign: 'right' }}>{s.shown} shown</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Top movies */}
+      {topMovies && (
+        <div style={CARD}>
+          <div style={{ ...LABEL, marginBottom: 14 }}>Most watched films</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>{['Film','Watches','Avg completion'].map(h => (
+                  <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--lb-text-muted)', borderBottom: '1px solid var(--lb-border)' }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {topMovies.slice(0, 15).map((m, i) => (
+                  <tr key={m.tmdb_id} style={{ borderBottom: '1px solid var(--lb-border)' }}>
+                    <td style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 10, color: 'var(--lb-text-muted)', width: 16 }}>{i + 1}</span>
+                      {m.poster_path && <img src={`${POSTER}${m.poster_path}`} alt="" style={{ width: 20, height: 30, objectFit: 'cover', borderRadius: 2 }} />}
+                      <span style={{ color: 'var(--lb-text-2)' }}>{m.title}</span>
+                    </td>
+                    <td style={{ padding: '8px 12px', color: 'var(--lb-text-muted)' }}>{m.watch_count}</td>
+                    <td style={{ padding: '8px 12px', color: 'var(--lb-text-muted)' }}>{m.avg_completion_pct ? `${m.avg_completion_pct}%` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Abandonment */}
+      {abandon && abandon.length > 0 && (
+        <div style={CARD}>
+          <div style={{ ...LABEL, marginBottom: 14 }}>Highest abandonment rate</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>{['Film','Started','Avg watched'].map(h => (
+                  <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--lb-text-muted)', borderBottom: '1px solid var(--lb-border)' }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {abandon.slice(0, 10).map(m => (
+                  <tr key={m.tmdb_id} style={{ borderBottom: '1px solid var(--lb-border)' }}>
+                    <td style={{ padding: '8px 12px', color: 'var(--lb-text-2)' }}>{m.title}</td>
+                    <td style={{ padding: '8px 12px', color: 'var(--lb-text-muted)' }}>{m.started_count}</td>
+                    <td style={{ padding: '8px 12px', color: 'var(--lb-danger)' }}>{m.avg_completion_pct}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main AdminPage ─────────────────────────────────────────────────────────────
 const TABS = [
   { id: 'dashboard',  label: 'Dashboard' },
   { id: 'streaming',  label: 'Streaming' },
   { id: 'comments',   label: 'Comments' },
   { id: 'users',      label: 'Users' },
   { id: 'subtitles',  label: 'Subtitles' },
+  { id: 'insights',   label: 'Insights' },
   { id: 'ml',         label: 'ML Service' },
   { id: 'jellyfin',   label: 'Jellyfin Health' },
 ];
@@ -1216,7 +1388,7 @@ export default function AdminPage() {
         </div>
 
         {/* Tab nav */}
-        <div style={{ display: 'flex', gap: '0', borderBottom: '1px solid var(--lb-border)', marginBottom: '28px' }}>
+        <div className="admin-tabs">
           {TABS.map(t => (
             <button
               key={t.id}
@@ -1228,6 +1400,7 @@ export default function AdminPage() {
                 borderBottom: `2px solid ${tab === t.id ? 'var(--lb-admin)' : 'transparent'}`,
                 color: tab === t.id ? 'var(--lb-admin)' : 'var(--lb-text-muted)',
                 transition: 'color 0.15s', marginBottom: '-1px',
+                flexShrink: 0, whiteSpace: 'nowrap',
               }}
             >
               {t.label}
@@ -1241,6 +1414,7 @@ export default function AdminPage() {
         {tab === 'comments'  && <CommentsTab />}
         {tab === 'users'     && <UsersTab currentUserId={user.id} />}
         {tab === 'subtitles' && <SubtitlesTab />}
+        {tab === 'insights'  && <InsightsTab />}
         {tab === 'ml'        && <MLServiceTab />}
         {tab === 'jellyfin'  && <JellyfinHealthTab />}
       </div>

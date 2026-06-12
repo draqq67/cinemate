@@ -244,7 +244,7 @@ router.get('/:tmdbId', async (req, res) => {
     let comments = [];
     if (inDb) {
       const { rows } = await pool.query(
-        `SELECT c.id, c.body, c.created_at, c.parent_id,
+        `SELECT c.id, c.user_id, c.body, c.created_at, c.parent_id,
                 u.username, u.avatar_url,
                 r.score AS user_rating
          FROM comments c
@@ -331,6 +331,22 @@ router.get('/:tmdbId', async (req, res) => {
     }));
 
     res.json({ movie, cast, crew, tmdbReviews, comments, trailers, inDb });
+
+    // Cache directors for analytics (fire-and-forget — non-blocking)
+    if (inDb && tmdbCredits?.crew) {
+      const directors = tmdbCredits.crew.filter(c => c.job === 'Director');
+      if (directors.length) {
+        const vals = directors.map(d => `(${tmdbId}, ${pool.escapeLiteral ? '' : ''}$1, $2, $3)`);
+        // Use parameterised batch insert
+        Promise.all(directors.map(d =>
+          pool.query(
+            `INSERT INTO movie_directors (tmdb_id, director_name, director_tmdb_id)
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [parseInt(tmdbId), d.name, d.id || null]
+          )
+        )).catch(() => {});
+      }
+    }
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

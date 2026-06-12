@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useTheme } from '../../hooks/useTheme';
+import { getUnreadCount } from '../../api/dm';
 
 const NAV_LINKS = [
   ['/', 'Films'],
   ['/browse', 'Browse'],
   ['/discover', 'Discover'],
   ['/lists', 'Lists'],
+  ['/users', 'People'],
   ['/activity', 'Activity'],
   ['/analytics', 'Stats'],
   ['/watchlist', 'Watchlist'],
@@ -18,6 +20,16 @@ export default function Navbar() {
   const { theme, toggle } = useTheme();
   const navigate  = useNavigate();
   const location  = useLocation();
+  const [unread, setUnread] = useState(0);
+
+  // Poll unread DM count every 30s when logged in
+  useEffect(() => {
+    if (!user) return;
+    const poll = () => getUnreadCount().then(({ data }) => setUnread(data.unread || 0)).catch(() => {});
+    poll();
+    const t = setInterval(poll, 30000);
+    return () => clearInterval(t);
+  }, [user]);
   const [open, setOpen] = useState(false);
 
   // Close mobile menu on route change
@@ -73,6 +85,20 @@ export default function Navbar() {
             {NAV_LINKS.map(([to, label]) => (
               <Link key={to} to={to} style={linkStyle(to)}>{label}</Link>
             ))}
+            {user && (
+              <Link to="/messages" style={{ ...linkStyle('/messages'), position: 'relative' }}>
+                Messages
+                {unread > 0 && (
+                  <span style={{
+                    position: 'absolute', top: -6, right: -10,
+                    minWidth: 16, height: 16, borderRadius: '50%',
+                    background: 'var(--lb-green)', color: 'var(--lb-bg)',
+                    fontSize: 9, fontWeight: 800, display: 'flex',
+                    alignItems: 'center', justifyContent: 'center', padding: '0 3px',
+                  }}>{unread > 9 ? '9+' : unread}</span>
+                )}
+              </Link>
+            )}
             {user?.role === 'admin' && (
               <Link to="/admin" style={{
                 ...linkStyle('/admin'),
@@ -157,6 +183,16 @@ export default function Navbar() {
         {NAV_LINKS.map(([to, label]) => (
           <Link key={to} to={to} style={mobileLinkStyle(to)}>{label}</Link>
         ))}
+        {user && (
+          <Link to="/messages" style={{ ...mobileLinkStyle('/messages'), display: 'flex', alignItems: 'center', gap: 8 }}>
+            Messages
+            {unread > 0 && (
+              <span style={{ minWidth: 18, height: 18, borderRadius: '50%', background: 'var(--lb-green)', color: 'var(--lb-bg)', fontSize: 10, fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px' }}>
+                {unread > 9 ? '9+' : unread}
+              </span>
+            )}
+          </Link>
+        )}
         {user?.role === 'admin' && (
           <Link to="/admin" style={{ ...mobileLinkStyle('/admin'), color: 'var(--lb-admin)' }}>Admin</Link>
         )}
